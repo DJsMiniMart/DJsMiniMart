@@ -749,10 +749,122 @@ function drawMonthlyBarChart(container, year){
 }
 
 /* ===================== VIEW: SALES & MARGINS ===================== */
+function buildYearPicker(yp, y, years){
+  years.forEach(yr=>{
+    const b = document.createElement('button');
+    b.textContent = yr; b.className = yr===y?"active":"";
+    b.onclick = ()=>{ salesState.year=yr; render(); };
+    yp.appendChild(b);
+  });
+  const addYearBtn = document.createElement('button');
+  addYearBtn.textContent = "+ Add Year";
+  addYearBtn.style.borderStyle = "dashed";
+  addYearBtn.onclick = ()=>{
+    const nextYear = String(Math.max(...years.map(Number)) + 1);
+    DATA.overlooks[nextYear] = {};
+    MONTHS.forEach(mo=>{ DATA.overlooks[nextYear][mo] = {daily:[], invoices:[], rebates:[], prior_year_profit:null}; });
+    persist(); toast(`${nextYear} added`); salesState.year = nextYear; salesState.month = "January"; render();
+  };
+  yp.appendChild(addYearBtn);
+  const delYearBtn = document.createElement('button');
+  delYearBtn.textContent = "\u2212 Delete Year";
+  delYearBtn.className = "btn danger";
+  delYearBtn.style.borderStyle = "dashed";
+  delYearBtn.onclick = ()=>{
+    if(years.length<=1){ toast("Can't delete the only year of data", true); return; }
+    const monthsWithData = MONTHS.filter(mo=>{
+      const md2 = DATA.overlooks[y][mo];
+      return (md2.daily&&md2.daily.length) || (md2.invoices&&md2.invoices.length) || (md2.rebates&&md2.rebates.length);
+    }).length;
+    const warning = monthsWithData
+      ? `${y} has data entered in ${monthsWithData} month${monthsWithData===1?"":"s"} (daily sales, invoices, and/or rebates). `
+      : "";
+    if(!confirm(`Delete all data for ${y}? ${warning}This cannot be undone. Type OK to confirm you intend to delete this year.`)) return;
+    delete DATA.overlooks[y];
+    const remaining = Object.keys(DATA.overlooks).sort();
+    salesState.year = remaining[remaining.length-1];
+    salesState.month = "January";
+    persist(); toast(`${y} deleted`); render();
+  };
+  yp.appendChild(delYearBtn);
+}
+
+function buildMonthTabs(mt, activeMonth){
+  MONTHS.forEach(mo=>{
+    const b = document.createElement('button');
+    b.textContent = mo.slice(0,3); b.className = mo===activeMonth?"active":"";
+    b.onclick = ()=>{ salesState.month=mo; render(); };
+    mt.appendChild(b);
+  });
+  const ysBtn = document.createElement('button');
+  ysBtn.textContent = "Year Summary";
+  ysBtn.className = activeMonth==="YEAR_SUMMARY" ? "active" : "";
+  ysBtn.onclick = ()=>{ salesState.month = "YEAR_SUMMARY"; render(); };
+  mt.appendChild(ysBtn);
+}
+
+function renderSalesYearSummary(main, y, years){
+  const t = yearTotals(y);
+  main.innerHTML = `
+    <div class="topbar">
+      <div><h1>Sales &amp; Margins</h1><p>Enter daily sales, invoices, and rebates. Margin &amp; ordering tracker updates live.</p></div>
+    </div>
+    <div class="yearpicker" id="yearPicker"></div>
+    <div class="tabs" id="monthTabs"></div>
+
+    <div class="kpis">
+      <div class="kpi"><div class="lbl">Combined Sales</div><div class="val">${fmtUSD0(t.combined)}</div></div>
+      <div class="kpi"><div class="lbl">Net Profit</div><div class="val">${fmtUSD0(t.netProfit)}</div></div>
+      <div class="kpi"><div class="lbl">Gross Margin</div><div class="val">${fmtPct(t.grossMargin)}</div></div>
+      <div class="kpi"><div class="lbl">Purchase Markup</div><div class="val">${fmtPct(t.markup)}</div></div>
+    </div>
+
+    <div class="card">
+      <h2>\ud83d\udcca ${y} \u2014 Full Year Totals</h2>
+      <div class="sub">${t.monthsWithData} of 12 months have sales data entered so far.</div>
+      <table>
+        <tr><td>Store Sales</td><td>${fmtUSD(t.store)}</td></tr>
+        <tr><td>Gas Sales</td><td>${fmtUSD(t.gas)}</td></tr>
+        <tr><td>Combined Sales</td><td>${fmtUSD(t.combined)}</td></tr>
+        <tr><td>Store Profit (before invoices/rebates)</td><td>${fmtUSD(t.profit)}</td></tr>
+        <tr><td>Total Invoices Paid</td><td>${fmtUSD(t.invoices)}</td></tr>
+        <tr><td>Total Rebates Received</td><td>${fmtUSD(t.rebates)}</td></tr>
+        <tr><td>Net Profit</td><td>${fmtUSD(t.netProfit)}</td></tr>
+        <tr><td>Gross Margin</td><td>${fmtPct(t.grossMargin)}</td></tr>
+        <tr><td>Purchase Markup</td><td>${fmtPct(t.markup)}</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Monthly Breakdown \u2014 ${y}</h2>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Month</th><th>Combined Sales</th><th>Invoices</th><th>Rebates</th><th>Net Profit</th><th>Markup</th></tr></thead>
+        <tbody>
+          ${MONTHS.map(mo=>{
+            const mt2 = monthTotals(y, mo);
+            const has = mt2.daysWithData>0 || mt2.invoices>0 || mt2.rebates>0;
+            return `<tr${has?"":' style="opacity:0.5"'}><td>${mo}</td><td>${fmtUSD(mt2.combined)}</td><td>${fmtUSD(mt2.invoices)}</td><td>${fmtUSD(mt2.rebates)}</td><td>${fmtUSD(mt2.netProfit)}</td><td>${fmtPct(mt2.markup)}</td></tr>`;
+          }).join("")}
+        </tbody>
+      </table></div>
+    </div>
+  `;
+  const yp = document.getElementById('yearPicker');
+  buildYearPicker(yp, y, years);
+  const mt = document.getElementById('monthTabs');
+  buildMonthTabs(mt, "YEAR_SUMMARY");
+}
+
 function renderSales(main){
   const years = Object.keys(DATA.overlooks).sort();
   if(!years.includes(salesState.year)) salesState.year = years[years.length-1];
   const y = salesState.year, m = salesState.month;
+
+  if(m === "YEAR_SUMMARY"){
+    renderSalesYearSummary(main, y, years);
+    return;
+  }
+
   const t = monthTotals(y,m);
   const md = DATA.overlooks[y][m];
 
@@ -828,50 +940,9 @@ function renderSales(main){
   `;
 
   const yp = document.getElementById('yearPicker');
-  years.forEach(yr=>{
-    const b = document.createElement('button');
-    b.textContent = yr; b.className = yr===y?"active":"";
-    b.onclick = ()=>{ salesState.year=yr; render(); };
-    yp.appendChild(b);
-  });
-  const addYearBtn = document.createElement('button');
-  addYearBtn.textContent = "+ Add Year";
-  addYearBtn.style.borderStyle = "dashed";
-  addYearBtn.onclick = ()=>{
-    const nextYear = String(Math.max(...years.map(Number)) + 1);
-    DATA.overlooks[nextYear] = {};
-    MONTHS.forEach(mo=>{ DATA.overlooks[nextYear][mo] = {daily:[], invoices:[], rebates:[], prior_year_profit:null}; });
-    persist(); toast(`${nextYear} added`); salesState.year = nextYear; salesState.month = "January"; render();
-  };
-  yp.appendChild(addYearBtn);
-  const delYearBtn = document.createElement('button');
-  delYearBtn.textContent = "\u2212 Delete Year";
-  delYearBtn.className = "btn danger";
-  delYearBtn.style.borderStyle = "dashed";
-  delYearBtn.onclick = ()=>{
-    if(years.length<=1){ toast("Can't delete the only year of data", true); return; }
-    const monthsWithData = MONTHS.filter(mo=>{
-      const md2 = DATA.overlooks[y][mo];
-      return (md2.daily&&md2.daily.length) || (md2.invoices&&md2.invoices.length) || (md2.rebates&&md2.rebates.length);
-    }).length;
-    const warning = monthsWithData
-      ? `${y} has data entered in ${monthsWithData} month${monthsWithData===1?"":"s"} (daily sales, invoices, and/or rebates). `
-      : "";
-    if(!confirm(`Delete all data for ${y}? ${warning}This cannot be undone. Type OK to confirm you intend to delete this year.`)) return;
-    delete DATA.overlooks[y];
-    const remaining = Object.keys(DATA.overlooks).sort();
-    salesState.year = remaining[remaining.length-1];
-    salesState.month = "January";
-    persist(); toast(`${y} deleted`); render();
-  };
-  yp.appendChild(delYearBtn);
+  buildYearPicker(yp, y, years);
   const mt = document.getElementById('monthTabs');
-  MONTHS.forEach(mo=>{
-    const b = document.createElement('button');
-    b.textContent = mo.slice(0,3); b.className = mo===m?"active":"";
-    b.onclick = ()=>{ salesState.month=mo; render(); };
-    mt.appendChild(b);
-  });
+  buildMonthTabs(mt, m);
 
   const dailyBody = document.getElementById('dailyBody');
   md.daily.slice().sort((a,b)=>a.day-b.day).forEach(d=>{
