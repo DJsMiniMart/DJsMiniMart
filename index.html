@@ -1672,6 +1672,7 @@ function renderForecastKeyInsights(el){
 
 /* ===================== VIEW: INVENTORY (full module) ===================== */
 let invState = {category:"ALL", search:"", statusFilter:"ALL"};
+let bulkPriceState = {search:"", category:"ALL", selected:new Set()};
 let invSubTab = "summary";
 const INV_TABS = [
   {id:"summary", label:"Inventory Summary"},
@@ -1679,6 +1680,7 @@ const INV_TABS = [
   {id:"invoiceEntry", label:"Invoice Entry"},
   {id:"invoiceLog", label:"Invoice Log"},
   {id:"productList", label:"Product List"},
+  {id:"bulkPrice", label:"Bulk Price Update"},
   {id:"count", label:"Inventory Count"},
   {id:"monthlyReports", label:"Monthly Reports"},
   {id:"countSheet", label:"Count Sheet (Print)"},
@@ -1718,11 +1720,13 @@ function currentFiscalQuarter(d){
   return 4;
 }
 
-function ensureProduct(name, category, cost, retail){
-  let p = DATA.inventory.find(x=>x.name===name && (!category || x.category===category));
+function ensureProduct(name, category, unit, cost, retail){
+  // Match on name + category + unit so products that share a name but come in different
+  // sizes (e.g. Milwaukee's Best Light 4pk / 15pk / 24pk) stay as separate records.
+  let p = DATA.inventory.find(x=>x.name===name && (!category || x.category===category) && (unit===undefined || (x.unit||"")===(unit||"")));
   if(p) return p;
   const nextNum = Math.max(0, ...DATA.inventory.map(pp=>pp.num||0)) + 1;
-  p = {num:nextNum, name, category: category||"Uncategorized", unit:"", par:0, closing:0, sold:0,
+  p = {num:nextNum, name, category: category||"Uncategorized", unit: unit||"", par:0, closing:0, sold:0,
     cost: cost||0, retail: retail||0, closing_value:0, sales_value:0, status:"\ud83d\udd34 OUT OF STOCK",
     opening:0, received_qty:0, notes:"", buydown:0, multipack_qty:null, multipack_deal_price:null};
   DATA.inventory.push(p);
@@ -1730,7 +1734,7 @@ function ensureProduct(name, category, cost, retail){
 }
 
 function productReceived(p){
-  const live = DATA.invoiceEntries.filter(e=>e.name===p.name && (e.category===p.category || !e.category))
+  const live = DATA.invoiceEntries.filter(e=>e.name===p.name && (e.category===p.category || !e.category) && ((e.unit||"")===(p.unit||"") || !e.unit))
     .reduce((s,e)=>s+num(e.qty),0);
   return live > 0 ? live : num(p.received_qty);
 }
@@ -1763,6 +1767,7 @@ function renderInventory(main){
   else if(invSubTab==="invoiceEntry") renderInvoiceEntry(content);
   else if(invSubTab==="invoiceLog") renderInvoiceLog(content);
   else if(invSubTab==="productList") renderProductList(content);
+  else if(invSubTab==="bulkPrice") renderBulkPriceUpdate(content);
   else if(invSubTab==="count") renderInventoryCount(content);
   else if(invSubTab==="monthlyReports") renderMonthlyReports(content);
   else if(invSubTab==="countSheet") renderCountSheet(content);
@@ -1829,7 +1834,7 @@ function renderReceivedLog(el){
         <div><label>Category</label><select id="rlCatFilter"><option value="ALL">All Categories</option>${catNames.map(c=>`<option value="${c}">${c}</option>`).join("")}</select></div>
       </div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Product Name</th><th>Category</th><th>Unit</th><th>Unit Cost</th><th>Retail Price</th><th>Qty Received</th><th>Notes</th></tr></thead>
+        <thead><tr><th>Product Name</th><th>Category</th><th>Unit / Size</th><th>Unit Cost</th><th>Retail Price</th><th>Qty Received</th><th>Notes</th></tr></thead>
         <tbody id="rlBody"></tbody>
       </table></div>
     </div>
@@ -1857,7 +1862,9 @@ function renderReceivedLog(el){
       return true;
     }).slice(0,300).forEach(p=>{
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${p.name}</td><td>${p.category}</td><td>${p.unit||""}</td>
+      tr.innerHTML = `<td><input class="editable-cell" value="${p.name}" data-field="name" data-num="${p.num}" data-cat="${p.category}"></td>
+        <td>${p.category}</td>
+        <td><input class="editable-cell" value="${p.unit||""}" data-field="unit" data-num="${p.num}" data-cat="${p.category}"></td>
         <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(p.cost).toFixed(2)}" data-field="cost" data-num="${p.num}" data-cat="${p.category}"></div></td>
         <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(p.retail).toFixed(2)}" data-field="retail" data-num="${p.num}" data-cat="${p.category}"></div></td>
         <td>${productReceived(p)}</td>
@@ -1869,7 +1876,8 @@ function renderReceivedLog(el){
         const p = DATA.inventory.find(x=>x.num===parseInt(inp.dataset.num) && x.category===inp.dataset.cat);
         if(!p) return;
         const field = inp.dataset.field;
-        p[field] = field==="notes" ? inp.value : (parseFloat(inp.value)||0);
+        if(field==="name" || field==="unit" || field==="notes") p[field] = inp.value;
+        else p[field] = parseFloat(inp.value)||0;
         if(field==="cost" || field==="retail"){
           p.closing_value = +(num(p.closing)*num(p.cost)).toFixed(2);
           p.sales_value = +(num(p.closing)*num(p.retail)).toFixed(2);
@@ -1903,13 +1911,14 @@ function renderInvoiceEntry(el){
       <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 1fr 1fr auto;">
         <div><label>Product Name</label><input id="ieName" list="ieProductList"></div>
         <div><label>Category</label><input id="ieCategory" list="ieCatList"></div>
-        <div><label>Unit</label><input id="ieUnit" placeholder="12pk, 24oz..."></div>
+        <div><label>Unit / Size</label><input id="ieUnit" list="ieUnitList" placeholder="12pk, 24oz..."></div>
         <div><label>Unit Cost</label><div class="dollar-wrap"><input id="ieCost" type="number" step="0.01"></div></div>
         <div><label>Qty Received</label><input id="ieQty" type="number"></div>
         <div><button class="btn" id="ieAddLineBtn">+ Add Line</button></div>
       </div>
       <datalist id="ieCatList">${catNames.map(c=>`<option value="${c}">`).join("")}</datalist>
-      <datalist id="ieProductList">${DATA.inventory.map(p=>`<option value="${p.name}">`).join("")}</datalist>
+      <datalist id="ieProductList">${[...new Set(DATA.inventory.map(p=>p.name))].map(n=>`<option value="${n}">`).join("")}</datalist>
+      <datalist id="ieUnitList"></datalist>
 
       <div class="tablewrap" style="max-height:280px;margin-top:10px;"><table>
         <thead><tr><th>Product</th><th>Category</th><th>Unit</th><th>Cost</th><th>Qty</th><th>Line Total</th><th></th></tr></thead>
@@ -1938,15 +1947,31 @@ function renderInvoiceEntry(el){
     </div>
   `;
 
-  document.getElementById('ieName').onchange = ()=>{
+  function fillFromNameAndUnit(){
     const name = document.getElementById('ieName').value.trim();
-    const p = DATA.inventory.find(x=>x.name===name);
-    if(p){
+    const unit = document.getElementById('ieUnit').value.trim();
+    const matches = DATA.inventory.filter(x=>x.name===name);
+    if(!matches.length) return;
+    document.getElementById('ieUnitList').innerHTML = matches.map(m=>`<option value="${m.unit||""}">`).join("");
+    if(matches.length===1){
+      const p = matches[0];
       document.getElementById('ieCategory').value = p.category || "";
       document.getElementById('ieUnit').value = p.unit || "";
       document.getElementById('ieCost').value = num(p.cost).toFixed(2);
+      return;
     }
-  };
+    // Multiple sizes exist for this product name -- try to match the chosen unit exactly.
+    const exact = matches.find(m=>(m.unit||"")===unit);
+    if(exact){
+      document.getElementById('ieCategory').value = exact.category || "";
+      document.getElementById('ieCost').value = num(exact.cost).toFixed(2);
+    } else {
+      document.getElementById('ieCategory').value = matches[0].category || "";
+      toast(`${matches.length} sizes found for "${name}" \u2014 pick the size from the Unit / Size list`, true);
+    }
+  }
+  document.getElementById('ieName').onchange = fillFromNameAndUnit;
+  document.getElementById('ieUnit').onchange = fillFromNameAndUnit;
 
   document.getElementById('ieAddLineBtn').onclick = ()=>{
     invoiceDraft.distributor = document.getElementById('ieDist').value.trim();
@@ -1990,9 +2015,8 @@ function renderInvoiceEntry(el){
     invoiceDraft.lines.forEach(l=>{
       DATA.invoiceEntries.unshift({name:l.name, category:l.category, unit:l.unit||"", cost:l.cost, qty:l.qty,
         total:num(l.total), distributor, invoice, date, notes:""});
-      const p = ensureProduct(l.name, l.category, l.cost, 0);
+      const p = ensureProduct(l.name, l.category, l.unit, l.cost, 0);
       if(l.cost) p.cost = l.cost;
-      if(l.unit && !p.unit) p.unit = l.unit;
     });
     persist();
     toast(`Invoice ${invoice} submitted \u2014 ${invoiceDraft.lines.length} line items logged`);
@@ -2138,6 +2162,124 @@ function renderProductList(el){
     });
   }
   drawPL();
+}
+
+/* ---------- Bulk Price Update (change many products' cost/retail at once) ---------- */
+function bulkProductKey(p){ return p.num + "|" + p.category; }
+
+function renderBulkPriceUpdate(el){
+  const catNames = [...new Set(DATA.inventory.map(p=>p.category))].sort();
+  el.innerHTML = `
+    <div class="note">Search for a brand or group of products (e.g. "Marlboro", "Camel", "candy"), select the ones you want, then apply a price change to all of them at once. Great for cigarette/tobacco price increases every couple of months.</div>
+    <div class="card">
+      <div class="form-grid" style="grid-template-columns:2fr 1fr;">
+        <div><label>Search product name</label><input id="bpSearch" value="${bulkPriceState.search}" placeholder="e.g. Marlboro"></div>
+        <div><label>Category</label><select id="bpCatFilter"><option value="ALL">All Categories</option>${catNames.map(c=>`<option value="${c}" ${bulkPriceState.category===c?"selected":""}>${c}</option>`).join("")}</select></div>
+      </div>
+      <div class="tablewrap" style="max-height:360px;"><table>
+        <thead><tr><th><input type="checkbox" id="bpSelectAll"></th><th>Product</th><th>Category</th><th>Unit</th><th>Current Cost</th><th>Current Retail</th></tr></thead>
+        <tbody id="bpBody"></tbody>
+      </table></div>
+      <div class="sub" id="bpMatchCount" style="margin-top:6px;"></div>
+    </div>
+    <div class="card">
+      <h2>Apply Price Change</h2>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr auto;">
+        <div><label>Apply to</label><select id="bpTarget">
+          <option value="retail">Retail Price</option>
+          <option value="cost">Unit Cost</option>
+          <option value="both">Both Cost &amp; Retail</option>
+        </select></div>
+        <div><label>Method</label><select id="bpMethod">
+          <option value="set">Set to exact amount</option>
+          <option value="increaseAmt">Increase by $</option>
+          <option value="decreaseAmt">Decrease by $</option>
+          <option value="increasePct">Increase by %</option>
+          <option value="decreasePct">Decrease by %</option>
+        </select></div>
+        <div><label>Amount</label><input id="bpAmount" type="number" step="0.01" placeholder="0.00"></div>
+        <div><label>&nbsp;</label><div class="sub" id="bpSelectedCount">0 selected</div></div>
+        <div><label>&nbsp;</label><button class="btn primary" id="bpApplyBtn">Apply to Selected</button></div>
+      </div>
+    </div>
+  `;
+
+  function matches(){
+    const search = bulkPriceState.search.toLowerCase();
+    return DATA.inventory.filter(p=>{
+      if(search && !p.name.toLowerCase().includes(search)) return false;
+      if(bulkPriceState.category!=="ALL" && p.category!==bulkPriceState.category) return false;
+      return true;
+    });
+  }
+
+  function draw(){
+    const list = matches();
+    const body = document.getElementById('bpBody');
+    body.innerHTML = "";
+    list.slice(0,300).forEach(p=>{
+      const key = bulkProductKey(p);
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><input type="checkbox" class="bp-check" data-key="${key}" ${bulkPriceState.selected.has(key)?"checked":""}></td>
+        <td>${p.name}</td><td>${p.category}</td><td>${p.unit||""}</td>
+        <td>${fmtUSD(num(p.cost))}</td><td>${fmtUSD(num(p.retail))}</td>`;
+      body.appendChild(tr);
+    });
+    document.getElementById('bpMatchCount').textContent = list.length > 300
+      ? `Showing first 300 of ${list.length.toLocaleString()} matches \u2014 narrow your search to see the rest.`
+      : `${list.length.toLocaleString()} product${list.length===1?"":"s"} match this search.`;
+    document.getElementById('bpSelectedCount').textContent = `${bulkPriceState.selected.size} selected`;
+    body.querySelectorAll('.bp-check').forEach(cb=>{
+      cb.onchange = ()=>{
+        if(cb.checked) bulkPriceState.selected.add(cb.dataset.key);
+        else bulkPriceState.selected.delete(cb.dataset.key);
+        document.getElementById('bpSelectedCount').textContent = `${bulkPriceState.selected.size} selected`;
+      };
+    });
+    const allChecked = list.length>0 && list.every(p=>bulkPriceState.selected.has(bulkProductKey(p)));
+    document.getElementById('bpSelectAll').checked = allChecked;
+  }
+
+  document.getElementById('bpSearch').oninput = e=>{ bulkPriceState.search = e.target.value; draw(); };
+  document.getElementById('bpCatFilter').onchange = e=>{ bulkPriceState.category = e.target.value; draw(); };
+  document.getElementById('bpSelectAll').onchange = e=>{
+    const list = matches();
+    if(e.target.checked) list.forEach(p=>bulkPriceState.selected.add(bulkProductKey(p)));
+    else list.forEach(p=>bulkPriceState.selected.delete(bulkProductKey(p)));
+    draw();
+  };
+
+  document.getElementById('bpApplyBtn').onclick = ()=>{
+    if(bulkPriceState.selected.size===0){ toast("Select at least one product first", true); return; }
+    const amount = parseFloat(document.getElementById('bpAmount').value);
+    if(isNaN(amount)){ toast("Enter an amount", true); return; }
+    const target = document.getElementById('bpTarget').value; // retail, cost, both
+    const method = document.getElementById('bpMethod').value;
+    const fields = target==="both" ? ["cost","retail"] : [target];
+    const selectedProducts = DATA.inventory.filter(p=>bulkPriceState.selected.has(bulkProductKey(p)));
+    const sampleNames = selectedProducts.slice(0,5).map(p=>p.name).join(", ");
+    const more = selectedProducts.length>5 ? ` and ${selectedProducts.length-5} more` : "";
+    if(!confirm(`Update ${fields.join(" & ")} for ${selectedProducts.length} product(s)?\n\n${sampleNames}${more}\n\nThis can't be undone automatically.`)) return;
+    selectedProducts.forEach(p=>{
+      fields.forEach(field=>{
+        const current = num(p[field]);
+        let next = current;
+        if(method==="set") next = amount;
+        else if(method==="increaseAmt") next = current + amount;
+        else if(method==="decreaseAmt") next = current - amount;
+        else if(method==="increasePct") next = current * (1 + amount/100);
+        else if(method==="decreasePct") next = current * (1 - amount/100);
+        p[field] = Math.max(0, +next.toFixed(2));
+      });
+      p.closing_value = +(num(p.closing)*num(p.cost)).toFixed(2);
+      p.sales_value = +(num(p.closing)*num(p.retail)).toFixed(2);
+    });
+    persist();
+    toast(`Updated ${selectedProducts.length} product(s)`);
+    draw();
+  };
+
+  draw();
 }
 
 /* ---------- Inventory Count (opening/received/closing/sold) ---------- */
