@@ -1686,6 +1686,7 @@ const INV_TABS = [
   {id:"countSheet", label:"Count Sheet (Print)"},
   {id:"printSummary", label:"Print Summary"},
   {id:"buydowns", label:"Cig \u0026 Tobacco Buydowns"},
+  {id:"distributorVariance", label:"Distributor Variance"},
 ];
 
 function monthEndKey(year, month){ return year + "-" + month; }
@@ -1773,6 +1774,93 @@ function renderInventory(main){
   else if(invSubTab==="countSheet") renderCountSheet(content);
   else if(invSubTab==="printSummary") renderPrintSummary(content);
   else if(invSubTab==="buydowns") renderBuydowns(content);
+  else if(invSubTab==="distributorVariance") renderDistributorVariance(content);
+}
+
+/* ---------- Distributor Variance (Invoiced $ vs Sold $, by distributor) ---------- */
+let distVarState = {threshold:10, dateFrom:"", dateTo:""};
+function distributorVarianceRows(threshold, dateFrom, dateTo){
+  const inRange = e=>{
+    if(!dateFrom && !dateTo) return true;
+    const d = (e.date||"").slice(0,10);
+    if(!d) return false;
+    if(dateFrom && d < dateFrom) return false;
+    if(dateTo && d > dateTo) return false;
+    return true;
+  };
+  const byDist = {};
+  DATA.invoiceEntries.filter(inRange).forEach(e=>{
+    const d = (e.distributor||"").trim() || "(No distributor listed)";
+    if(!byDist[d]) byDist[d] = {distributor:d, invoiced:0, products:new Map()};
+    byDist[d].invoiced += num(e.total);
+    const key = e.name+"\u0001"+(e.category||"")+"\u0001"+(e.unit||"");
+    if(!byDist[d].products.has(key)) byDist[d].products.set(key, {name:e.name, category:e.category||"", unit:e.unit||""});
+  });
+  const rows = Object.values(byDist).map(g=>{
+    let sold = 0, units = 0, matched = 0;
+    g.products.forEach(ref=>{
+      const p = DATA.inventory.find(x=>x.name===ref.name && (x.category||"")===ref.category && (x.unit||"")===ref.unit);
+      if(p){
+        const u = productUnitsSold(p);
+        sold += u*num(p.retail);
+        units += u;
+        matched++;
+      }
+    });
+    const gap = g.invoiced - sold;
+    const gapPct = sold>0 ? (gap/sold)*100 : (g.invoiced>0 ? 100 : 0);
+    return {distributor:g.distributor, invoiced:g.invoiced, sold, gap, gapPct,
+      productCount:g.products.size, matched, units, flagged: gapPct > threshold};
+  }).sort((a,b)=> b.gapPct - a.gapPct);
+  return rows;
+}
+function renderDistributorVariance(el){
+  const rows = distributorVarianceRows(num(distVarState.threshold), distVarState.dateFrom, distVarState.dateTo);
+  const flaggedCount = rows.filter(r=>r.flagged).length;
+  const totalInvoiced = rows.reduce((s,r)=>s+r.invoiced,0);
+  const totalSold = rows.reduce((s,r)=>s+r.sold,0);
+  el.innerHTML = `
+    <div class="note">Compares what's currently logged in the Delivery Log (Invoice Entry) against what Inventory Count shows sold, grouped by distributor. A distributor is flagged when invoiced $ exceeds sold $ by more than the threshold below \u2014 that's a signal to cut back the next order. Delete a distributor's delivered invoices from the Invoice Log after you reconcile a count so this stays accurate period to period.</div>
+    <div class="card">
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
+        <div><label>Flag threshold (invoiced $ exceeds sold $ by...)</label>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <input id="dvThreshold" type="range" min="0" max="100" step="1" value="${num(distVarState.threshold)}" style="flex:1;">
+            <span id="dvThresholdVal" style="font-weight:700;min-width:44px;">${num(distVarState.threshold)}%</span>
+          </div>
+        </div>
+        <div><label>From date (optional)</label><input id="dvFrom" type="date" value="${distVarState.dateFrom||""}"></div>
+        <div><label>To date (optional)</label><input id="dvTo" type="date" value="${distVarState.dateTo||""}"></div>
+      </div>
+    </div>
+    <div class="kpis">
+      <div class="kpi"><div class="lbl">Total Invoiced</div><div class="val">${fmtUSD0(totalInvoiced)}</div></div>
+      <div class="kpi"><div class="lbl">Total Sold (matched products)</div><div class="val">${fmtUSD0(totalSold)}</div></div>
+      <div class="kpi"><div class="lbl">Distributors Flagged</div><div class="val" style="color:${flaggedCount?'var(--red)':'inherit'}">${flaggedCount}</div><div class="sub">of ${rows.length} distributors</div></div>
+    </div>
+    <div class="card">
+      <h2>By Distributor</h2>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Distributor</th><th>Invoiced $</th><th>Sold $</th><th>Gap $</th><th>Gap %</th><th># Products</th><th>Status</th></tr></thead>
+        <tbody id="dvBody">${rows.length ? rows.map(r=>`<tr>
+          <td>${r.distributor}</td>
+          <td>${fmtUSD(r.invoiced)}</td>
+          <td>${fmtUSD(r.sold)}</td>
+          <td style="color:${r.gap>0?'var(--red)':'inherit'}">${fmtUSD(r.gap)}</td>
+          <td style="color:${r.gap>0?'var(--red)':'inherit'}">${r.gapPct.toFixed(1)}%</td>
+          <td>${r.matched} / ${r.productCount}</td>
+          <td>${r.flagged ? '<span class="pill bad">Cut back ordering</span>' : '<span class="pill ok">In line</span>'}</td>
+        </tr>`).join("") : `<tr><td colspan="7" style="color:var(--text-dim);text-align:center;">No invoice entries logged yet \u2014 add some in Invoice Entry first.</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>
+  `;
+  const thumb = document.getElementById('dvThreshold');
+  const thumbVal = document.getElementById('dvThresholdVal');
+  thumb.oninput = ()=>{ thumbVal.textContent = thumb.value+"%"; };
+  thumb.onchange = ()=>{ distVarState.threshold = parseFloat(thumb.value)||0; renderDistributorVariance(el); };
+  document.getElementById('dvFrom').onchange = e=>{ distVarState.dateFrom = e.target.value; renderDistributorVariance(el); };
+  document.getElementById('dvTo').onchange = e=>{ distVarState.dateTo = e.target.value; renderDistributorVariance(el); };
 }
 
 /* ---------- Summary ---------- */
