@@ -2147,6 +2147,7 @@ function renderInvoiceEntry(el){
 }
 
 /* ---------- Invoice Log (grouped from Invoice Entry, by invoice #) ---------- */
+let ilExpanded = null; // invoice # currently expanded for editing
 function renderInvoiceLog(el){
   const groups = {};
   DATA.invoiceEntries.forEach(e=>{
@@ -2156,18 +2157,58 @@ function renderInvoiceLog(el){
     groups[e.invoice].total += num(e.total);
   });
   const rows = Object.values(groups).sort((a,b)=> (b.date||"").localeCompare(a.date||""));
+  const catNames = [...new Set(DATA.inventory.map(p=>p.category))].sort();
+  const nameList = [...new Set(DATA.inventory.map(p=>p.name))];
   el.innerHTML = `
-    <div class="note">Automatically grouped from Invoice Entry lines by Invoice #. ${rows.length.toLocaleString()} invoices this period, totaling ${fmtUSD(rows.reduce((s,r)=>s+r.total,0))}.</div>
+    <div class="note">Automatically grouped from Invoice Entry lines by Invoice #. ${rows.length.toLocaleString()} invoices this period, totaling ${fmtUSD(rows.reduce((s,r)=>s+r.total,0))}. Click Edit to change the distributor, invoice #, date, or individual line items.</div>
     <div class="card">
       <div class="tablewrap"><table>
         <thead><tr><th>Invoice #</th><th>Distributor</th><th>Date</th><th># Line Items</th><th>Invoice Total</th><th></th></tr></thead>
-        <tbody id="ilBody">${rows.map(r=>`<tr><td>${r.invoice}</td><td>${r.distributor}</td><td>${r.date?r.date.slice(0,10):""}</td>
-          <td>${r.lines}</td><td>${fmtUSD(r.total)}</td>
-          <td><button class="btn small danger" data-invoice="${r.invoice.replace(/"/g,'&quot;')}">Delete</button></td></tr>`).join("")}
+        <tbody id="ilBody">
+        ${rows.map(r=>{
+          const expanded = ilExpanded === r.invoice;
+          const rowHtml = `<tr><td>${r.invoice}</td><td>${r.distributor}</td><td>${r.date?r.date.slice(0,10):""}</td>
+            <td>${r.lines}</td><td>${fmtUSD(r.total)}</td>
+            <td class="btnrow"><button class="btn small" data-edit="${r.invoice.replace(/"/g,'&quot;')}">${expanded?"Close":"Edit"}</button><button class="btn small danger" data-invoice="${r.invoice.replace(/"/g,'&quot;')}">Delete</button></td></tr>`;
+          if(!expanded) return rowHtml;
+          const lines = DATA.invoiceEntries.map((e,idx)=>({e,idx})).filter(({e})=>e.invoice===r.invoice);
+          const editHtml = `<tr><td colspan="6" style="padding:0;">
+            <div class="card" style="margin:8px 0;background:#F8FAFD;">
+              <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
+                <div><label>Distributor</label><input class="editable-cell" id="ilEditDist" value="${r.distributor||""}"></div>
+                <div><label>Invoice #</label><input class="editable-cell" id="ilEditInvoice" value="${r.invoice||""}"></div>
+                <div><label>Date</label><input class="editable-cell" type="date" id="ilEditDate" value="${r.date?r.date.slice(0,10):""}"></div>
+              </div>
+              <div class="tablewrap" style="margin-top:10px;"><table>
+                <thead><tr><th>Product</th><th>Category</th><th>Unit</th><th>Cost</th><th>Qty</th><th>Line Total</th><th></th></tr></thead>
+                <tbody>
+                ${lines.map(({e,idx})=>`<tr>
+                  <td><input class="editable-cell" value="${e.name||""}" data-line-idx="${idx}" data-line-field="name" list="ilNameList_${idx}"><datalist id="ilNameList_${idx}">${nameList.map(n=>`<option value="${n}">`).join("")}</datalist></td>
+                  <td><input class="editable-cell" value="${e.category||""}" data-line-idx="${idx}" data-line-field="category" list="ilCatList"></td>
+                  <td><input class="editable-cell" value="${e.unit||""}" data-line-idx="${idx}" data-line-field="unit"></td>
+                  <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(e.cost).toFixed(2)}" data-line-idx="${idx}" data-line-field="cost"></div></td>
+                  <td><input class="editable-cell" type="number" step="1" value="${num(e.qty)}" data-line-idx="${idx}" data-line-field="qty"></td>
+                  <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(e.total).toFixed(2)}" data-line-idx="${idx}" data-line-field="total"></div></td>
+                  <td><button class="btn small danger" data-remove-line="${idx}">Remove</button></td>
+                </tr>`).join("")}
+                </tbody>
+              </table></div>
+              <div class="btnrow" style="margin-top:10px;"><button class="btn" id="ilAddLine" data-add-for="${r.invoice.replace(/"/g,'&quot;')}">+ Add Line Item</button></div>
+            </div>
+          </td></tr>`;
+          return rowHtml + editHtml;
+        }).join("")}
         </tbody>
       </table></div>
+      <datalist id="ilCatList">${catNames.map(c=>`<option value="${c}">`).join("")}</datalist>
     </div>
   `;
+  document.getElementById('ilBody').querySelectorAll('[data-edit]').forEach(btn=>{
+    btn.onclick = ()=>{
+      ilExpanded = ilExpanded===btn.dataset.edit ? null : btn.dataset.edit;
+      renderInvoiceLog(el);
+    };
+  });
   document.getElementById('ilBody').querySelectorAll('[data-invoice]').forEach(btn=>{
     btn.onclick = ()=>{
       const invoiceNum = btn.dataset.invoice;
@@ -2194,11 +2235,74 @@ function renderInvoiceLog(el){
       }
       if(!confirm(msg)) return;
       DATA.invoiceEntries = DATA.invoiceEntries.filter(e=>e.invoice!==invoiceNum);
+      if(ilExpanded===invoiceNum) ilExpanded = null;
       persist();
       toast(`Invoice ${invoiceNum} deleted`);
       renderInvoiceLog(el);
     };
   });
+
+  if(!ilExpanded) return;
+
+  // Header fields (distributor / invoice # / date) apply to every line in this invoice
+  const distInp = document.getElementById('ilEditDist');
+  const invInp = document.getElementById('ilEditInvoice');
+  const dateInp = document.getElementById('ilEditDate');
+  if(distInp) distInp.onchange = ()=>{
+    const oldInvoice = ilExpanded;
+    const val = distInp.value.trim();
+    DATA.invoiceEntries.forEach(e=>{ if(e.invoice===oldInvoice) e.distributor = val; });
+    persist(); toast("Distributor updated"); renderInvoiceLog(el);
+  };
+  if(invInp) invInp.onchange = ()=>{
+    const oldInvoice = ilExpanded;
+    const val = invInp.value.trim();
+    if(!val){ toast("Invoice # can't be blank", true); renderInvoiceLog(el); return; }
+    DATA.invoiceEntries.forEach(e=>{ if(e.invoice===oldInvoice) e.invoice = val; });
+    ilExpanded = val;
+    persist(); toast("Invoice # updated"); renderInvoiceLog(el);
+  };
+  if(dateInp) dateInp.onchange = ()=>{
+    const oldInvoice = ilExpanded;
+    const val = dateInp.value || null;
+    DATA.invoiceEntries.forEach(e=>{ if(e.invoice===oldInvoice) e.date = val; });
+    persist(); toast("Date updated"); renderInvoiceLog(el);
+  };
+
+  // Line item fields
+  document.getElementById('ilBody').querySelectorAll('[data-line-idx]').forEach(inp=>{
+    inp.onchange = ()=>{
+      const idx = parseInt(inp.dataset.lineIdx);
+      const field = inp.dataset.lineField;
+      const line = DATA.invoiceEntries[idx];
+      if(!line) return;
+      if(field==="name" || field==="category" || field==="unit"){
+        line[field] = inp.value;
+        ensureProduct(line.name, line.category, line.unit, line.cost, 0);
+      } else {
+        line[field] = parseFloat(inp.value)||0;
+        if(field==="cost" || field==="qty") line.total = +(num(line.cost)*num(line.qty)).toFixed(2);
+      }
+      persist(); renderInvoiceLog(el);
+    };
+  });
+  document.getElementById('ilBody').querySelectorAll('[data-remove-line]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const idx = parseInt(btn.dataset.removeLine);
+      const line = DATA.invoiceEntries[idx];
+      if(!confirm(`Remove this line item (${line?line.name:""}, ${fmtUSD(line?line.total:0)}) from invoice ${ilExpanded}?`)) return;
+      DATA.invoiceEntries.splice(idx,1);
+      persist(); toast("Line item removed"); renderInvoiceLog(el);
+    };
+  });
+  const addBtn = document.getElementById('ilAddLine');
+  if(addBtn) addBtn.onclick = ()=>{
+    const invoiceNum = addBtn.dataset.addFor;
+    const g = groups[invoiceNum];
+    DATA.invoiceEntries.unshift({name:"", category:"", unit:"", cost:0, qty:1, total:0,
+      distributor: g?g.distributor:"", invoice: invoiceNum, date: g?g.date:null, notes:""});
+    persist(); toast("Line item added \u2014 fill in the product details"); renderInvoiceLog(el);
+  };
 }
 
 /* ---------- Product List ---------- */
