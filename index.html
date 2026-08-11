@@ -1789,7 +1789,7 @@ function distributorVarianceRows(threshold, dateFrom, dateTo){
     return true;
   };
   const byDist = {};
-  DATA.invoiceEntries.filter(inRange).forEach(e=>{
+  DATA.invoiceEntries.filter(e=>!e.reconciled).filter(inRange).forEach(e=>{
     const d = (e.distributor||"").trim() || "(No distributor listed)";
     if(!byDist[d]) byDist[d] = {distributor:d, invoiced:0, products:new Map()};
     byDist[d].invoiced += num(e.total);
@@ -1820,7 +1820,8 @@ function renderDistributorVariance(el){
   const totalInvoiced = rows.reduce((s,r)=>s+r.invoiced,0);
   const totalSold = rows.reduce((s,r)=>s+r.sold,0);
   el.innerHTML = `
-    <div class="note">Compares what's currently logged in the Delivery Log (Invoice Entry) against what Inventory Count shows sold, grouped by distributor. A distributor is flagged when invoiced $ exceeds sold $ by more than the threshold below \u2014 that's a signal to cut back the next order. Delete a distributor's delivered invoices from the Invoice Log after you reconcile a count so this stays accurate period to period.</div>
+    <div class="note">Compares your <b>pending</b> (not-yet-reconciled) invoices against what Inventory Count shows sold since your last roll, grouped by distributor. A distributor is flagged when invoiced $ exceeds sold $ by more than the threshold below \u2014 that's a signal to cut back the next order. This will look skewed right after you roll a count, since Sold $ starts back near $0 until your next count \u2014 it becomes meaningful again once you've counted at the end of the current period.</div>
+    <div class="note" style="margin-top:-6px;">Reconciled invoices are excluded automatically. Use the date filters below only if you want to look at a specific window instead of the current pending period.</div>
     <div class="card">
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
         <div><label>Flag threshold (invoiced $ exceeds sold $ by...)</label>
