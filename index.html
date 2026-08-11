@@ -1860,7 +1860,7 @@ function renderReceivedLog(el){
       if(rlSearch && !p.name.toLowerCase().includes(rlSearch)) return false;
       if(rlCat!=="ALL" && p.category!==rlCat) return false;
       return true;
-    }).slice(0,300).forEach(p=>{
+    }).forEach(p=>{
       const tr = document.createElement('tr');
       tr.innerHTML = `<td><input class="editable-cell" value="${p.name}" data-field="name" data-num="${p.num}" data-cat="${p.category}"></td>
         <td>${p.category}</td>
@@ -2031,7 +2031,7 @@ function renderInvoiceEntry(el){
     DATA.invoiceEntries.filter(e=>{
       if(!ieSearch) return true;
       return e.name.toLowerCase().includes(ieSearch) || (e.distributor||"").toLowerCase().includes(ieSearch) || (e.invoice||"").toLowerCase().includes(ieSearch);
-    }).slice(0,300).forEach((e,idx)=>{
+    }).forEach((e,idx)=>{
       const realIdx = DATA.invoiceEntries.indexOf(e);
       const tr = document.createElement('tr');
       tr.innerHTML = `<td>${e.name}</td><td>${e.category}</td><td>${fmtUSD(e.cost)}</td><td>${e.qty}</td>
@@ -2143,7 +2143,7 @@ function renderProductList(el){
       const st = inventoryStatus(p.par,p.closing);
       if(invState.statusFilter!=="ALL" && st!==invState.statusFilter) return false;
       return true;
-    }).slice(0,300);
+    });
     body.innerHTML = "";
     list.forEach(p=>{
       const st = inventoryStatus(p.par,p.closing);
@@ -2217,7 +2217,7 @@ function renderBulkPriceUpdate(el){
     const list = matches();
     const body = document.getElementById('bpBody');
     body.innerHTML = "";
-    list.slice(0,300).forEach(p=>{
+    list.forEach(p=>{
       const key = bulkProductKey(p);
       const tr = document.createElement('tr');
       tr.innerHTML = `<td><input type="checkbox" class="bp-check" data-key="${key}" ${bulkPriceState.selected.has(key)?"checked":""}></td>
@@ -2315,7 +2315,7 @@ function renderInventoryCount(el){
       if(icSearch && !p.name.toLowerCase().includes(icSearch)) return false;
       if(icCat!=="ALL" && p.category!==icCat) return false;
       return true;
-    }).slice(0,300);
+    });
   }
   function draw(){
     const body = document.getElementById('icBody');
@@ -2686,7 +2686,7 @@ function renderMonthlyReportDetail(el, key){
     report.products
       .map((p, idx)=>({p, idx}))
       .filter(({p})=> !s || p.name.toLowerCase().includes(s))
-      .slice(0,300)
+      
       .forEach(({p, idx})=>{
         const st = inventoryStatus(p.par, p.closing);
         const pill = st==="OK" ? '<span class="pill ok">OK</span>' : st==="LOW" ? '<span class="pill warn">Low</span>' : '<span class="pill bad">Out</span>';
