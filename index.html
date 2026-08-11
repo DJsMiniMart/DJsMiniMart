@@ -2162,6 +2162,14 @@ function renderInvoiceLog(el){
   el.innerHTML = `
     <div class="note">Automatically grouped from Invoice Entry lines by Invoice #. ${rows.length.toLocaleString()} invoices this period, totaling ${fmtUSD(rows.reduce((s,r)=>s+r.total,0))}. Click Edit to change the distributor, invoice #, date, or individual line items.</div>
     <div class="card">
+      <h2>Clear a Reconciled Period</h2>
+      <div class="note" style="margin-top:0;">After you roll a count (Closing \u2192 Opening), delete the invoices that were part of that count so Received Qty doesn't double-count them next period. Pick the count date below and everything dated on or before it will be removed from the Delivery Log.</div>
+      <div class="form-grid" style="grid-template-columns:1fr auto;align-items:end;">
+        <div><label>Delete all invoices dated on or before</label><input id="ilBulkDate" type="date"></div>
+        <div><button class="btn danger" id="ilBulkDeleteBtn">Delete Invoices Through This Date</button></div>
+      </div>
+    </div>
+    <div class="card">
       <div class="tablewrap"><table>
         <thead><tr><th>Invoice #</th><th>Distributor</th><th>Date</th><th># Line Items</th><th>Invoice Total</th><th></th></tr></thead>
         <tbody id="ilBody">
@@ -2241,6 +2249,39 @@ function renderInvoiceLog(el){
       renderInvoiceLog(el);
     };
   });
+
+  document.getElementById('ilBulkDeleteBtn').onclick = ()=>{
+    const cutoff = document.getElementById('ilBulkDate').value;
+    if(!cutoff){ toast("Pick a cutoff date first", true); return; }
+    const toDelete = DATA.invoiceEntries.filter(e=> e.date && e.date.slice(0,10) <= cutoff);
+    if(!toDelete.length){ toast("No invoices found on or before that date", true); return; }
+    const invoiceNums = [...new Set(toDelete.map(e=>e.invoice))];
+    const total = toDelete.reduce((s,e)=>s+num(e.total),0);
+
+    // Same "affected products" check as single delete, but across every invoice being removed.
+    const remainingEntries = DATA.invoiceEntries.filter(e=> !(e.date && e.date.slice(0,10) <= cutoff));
+    const productKeys = [...new Set(toDelete.map(e=>e.name+"|"+(e.category||"")))];
+    const affectedProducts = [];
+    productKeys.forEach(key=>{
+      const sep = key.lastIndexOf("|");
+      const name = key.slice(0, sep), category = key.slice(sep+1);
+      const hasRemaining = remainingEntries.some(e=>e.name===name && (e.category||"")===category);
+      if(!hasRemaining) affectedProducts.push(name);
+    });
+
+    let msg = `Delete ${toDelete.length} line item(s) across ${invoiceNums.length} invoice(s) dated on or before ${cutoff} (${fmtUSD(total)} total)? This can't be undone.`;
+    if(affectedProducts.length){
+      const shown = affectedProducts.slice(0, 15);
+      msg += `\n\nThese ${affectedProducts.length} product(s) will have no delivery left on file \u2014 their Received Qty in Inventory Count will drop to 0 (expected, since you've already counted them):\n\u2022 ` + shown.join("\n\u2022 ");
+      if(affectedProducts.length > shown.length) msg += `\n\u2022 ...and ${affectedProducts.length - shown.length} more`;
+    }
+    if(!confirm(msg)) return;
+    DATA.invoiceEntries = remainingEntries;
+    if(ilExpanded && invoiceNums.includes(ilExpanded)) ilExpanded = null;
+    persist();
+    toast(`Deleted ${toDelete.length} line item(s) across ${invoiceNums.length} invoice(s)`);
+    renderInvoiceLog(el);
+  };
 
   if(!ilExpanded) return;
 
