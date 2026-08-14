@@ -1988,9 +1988,10 @@ function renderInvoiceEntry(el){
   const draftTotal = invoiceDraft.lines.reduce((s,l)=>s+num(l.total),0);
 
   el.innerHTML = `
-    <div class="note">Enter the invoice header once, add every line item on it, then submit the whole invoice in one go. Unit Cost auto-fills from Received Log when you pick a known product. Qty Received flows into Inventory Count and Received Log automatically. If this delivery got a one-time discount on a product, enter it in Discount — it's subtracted from that line's total only and never changes the product's normal cost in Inventory.</div>
+    <div class="note">Enter the invoice header once, add every line item on it, then submit the whole invoice in one go. Unit Cost auto-fills from Received Log when you pick a known product. Qty Received flows into Inventory Count and Received Log automatically. If this delivery got a one-time discount on a product, enter it in Discount — it's subtracted from that line's total only and never changes the product's normal cost in Inventory. Typing an Invoice # that's already on file will offer to reopen it for editing.</div>
     <div class="card">
-      <h2>New Invoice</h2>
+      <h2>${invoiceDraft.reopenedInvoice ? `Editing Invoice ${invoiceDraft.reopenedInvoice}` : "New Invoice"}</h2>
+      ${invoiceDraft.reopenedInvoice ? `<div class="note" style="margin-top:0;">Reopened for editing — fix, add, or remove line items below, then Submit to save your changes over the original invoice.</div>` : ""}
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
         <div><label>Distributor</label><input id="ieDist" value="${invoiceDraft.distributor}"></div>
         <div><label>Invoice #</label><input id="ieInvoice" value="${invoiceDraft.invoice}"></div>
@@ -2013,7 +2014,7 @@ function renderInvoiceEntry(el){
       <div class="tablewrap" style="max-height:280px;margin-top:10px;"><table>
         <thead><tr><th>Product</th><th>Category</th><th>Unit</th><th>Cost</th><th>Qty</th><th>Discount</th><th>Line Total</th><th></th></tr></thead>
         <tbody id="ieDraftBody">${invoiceDraft.lines.length ? invoiceDraft.lines.map((l,i)=>({l,i})).reverse().map(({l,i})=>`<tr>
-          <td>${l.name}</td><td>${l.category}</td><td>${l.unit||""}</td><td>${fmtUSD(l.cost)}</td><td>${l.qty}</td>
+          <td>${l.name}${l.reconciled ? ' <span class="pill ok" style="font-size:10px;">Reconciled</span>' : ''}</td><td>${l.category}</td><td>${l.unit||""}</td><td>${fmtUSD(l.cost)}</td><td>${l.qty}</td>
           <td>${num(l.discount) ? `<span style="color:var(--green);font-weight:700;">-${fmtUSD(l.discount)}</span>` : "—"}</td>
           <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(l.total).toFixed(2)}" data-total-line="${i}"></div></td>
           <td><button class="btn small" data-line="${i}">Remove</button></td></tr>`).join("") :
@@ -2023,8 +2024,8 @@ function renderInvoiceEntry(el){
       <div class="flex" style="justify-content:space-between;margin-top:12px;">
         <div style="font-weight:700;font-size:14px;">Invoice Total: ${fmtUSD(draftTotal)} \u2014 ${invoiceDraft.lines.length} line item${invoiceDraft.lines.length===1?"":"s"}</div>
         <div class="btnrow">
-          <button class="btn danger" id="ieClearBtn">Clear</button>
-          <button class="btn primary" id="ieSubmitBtn">Submit Invoice</button>
+          <button class="btn danger" id="ieClearBtn">${invoiceDraft.reopenedInvoice ? "Cancel Edit" : "Clear"}</button>
+          <button class="btn primary" id="ieSubmitBtn">${invoiceDraft.reopenedInvoice ? "Save Changes" : "Submit Invoice"}</button>
         </div>
       </div>
     </div>
@@ -2067,6 +2068,30 @@ function renderInvoiceEntry(el){
   document.getElementById('ieName').onchange = fillFromNameAndUnit;
   document.getElementById('ieUnit').onchange = fillFromNameAndUnit;
 
+  document.getElementById('ieInvoice').onchange = ()=>{
+    const val = document.getElementById('ieInvoice').value.trim();
+    if(!val) return;
+    if(invoiceDraft.reopenedInvoice === val) return; // already reopened this one
+    const matches = DATA.invoiceEntries.filter(e=>e.invoice===val);
+    if(!matches.length) return;
+    const matchTotal = matches.reduce((s,e)=>s+num(e.total),0);
+    const reconciledCount = matches.filter(e=>e.reconciled).length;
+    let msg = `Invoice ${val} is already on file — ${matches.length} line item${matches.length===1?"":"s"} from ${matches[0].distributor||"unknown distributor"}, totaling ${fmtUSD(matchTotal)}.\n\nReopen it for editing? Its line items will load into the form below so you can fix or finish it, then Submit to save your changes.`;
+    if(invoiceDraft.lines.length) msg += `\n\nNote: this will replace the unsaved line item(s) currently in the form.`;
+    if(reconciledCount) msg += `\n\nNote: ${reconciledCount} of its line item(s) are already marked Reconciled (counted in a prior inventory count) — their reconciled status will be kept as-is.`;
+    if(!confirm(msg)){ return; }
+    invoiceDraft = {
+      distributor: matches[0].distributor || "",
+      invoice: val,
+      date: matches[0].date ? matches[0].date.slice(0,10) : "",
+      lines: matches.map(m=>({name:m.name, category:m.category, unit:m.unit||"", cost:num(m.cost), qty:num(m.qty),
+        discount:num(m.discount), total:num(m.total), reconciled:!!m.reconciled})),
+      reopenedInvoice: val
+    };
+    toast(`Invoice ${val} reopened — ${matches.length} line item${matches.length===1?"":"s"} loaded for editing`);
+    renderInvoiceEntry(el);
+  };
+
   document.getElementById('ieAddLineBtn').onclick = ()=>{
     invoiceDraft.distributor = document.getElementById('ieDist').value.trim();
     invoiceDraft.invoice = document.getElementById('ieInvoice').value.trim();
@@ -2098,7 +2123,9 @@ function renderInvoiceEntry(el){
     };
   });
   document.getElementById('ieClearBtn').onclick = ()=>{
+    const wasReopened = invoiceDraft.reopenedInvoice;
     invoiceDraft = {distributor:"", invoice:"", date:"", lines:[]};
+    if(wasReopened) toast(`Edit cancelled — invoice ${wasReopened} is unchanged on file`);
     renderInvoiceEntry(el);
   };
   document.getElementById('ieSubmitBtn').onclick = ()=>{
@@ -2107,15 +2134,20 @@ function renderInvoiceEntry(el){
     const date = document.getElementById('ieDate').value || null;
     if(!invoiceDraft.lines.length){ toast("Add at least one line item first", true); return; }
     if(!distributor || !invoice){ toast("Enter a distributor and invoice #", true); return; }
+    const reopenedFrom = invoiceDraft.reopenedInvoice;
+    if(reopenedFrom){
+      // Replacing a reopened invoice -- drop its original lines first so edits don't duplicate them.
+      DATA.invoiceEntries = DATA.invoiceEntries.filter(e=>e.invoice!==reopenedFrom);
+    }
     invoiceDraft.lines.forEach(l=>{
       DATA.invoiceEntries.unshift({name:l.name, category:l.category, unit:l.unit||"", cost:l.cost, qty:l.qty,
-        discount:num(l.discount), total:num(l.total), distributor, invoice, date, notes:""});
+        discount:num(l.discount), total:num(l.total), distributor, invoice, date, notes:"", reconciled:!!l.reconciled});
       const p = ensureProduct(l.name, l.category, l.unit, l.cost, 0);
       if(l.cost) p.cost = l.cost;
       // Discount is a one-time reduction for this delivery only -- product's normal cost is never touched by it.
     });
     persist();
-    toast(`Invoice ${invoice} submitted \u2014 ${invoiceDraft.lines.length} line items logged`);
+    toast(reopenedFrom ? `Invoice ${invoice} updated \u2014 ${invoiceDraft.lines.length} line items saved` : `Invoice ${invoice} submitted \u2014 ${invoiceDraft.lines.length} line items logged`);
     invoiceDraft = {distributor:"", invoice:"", date:"", lines:[]};
     renderInvoiceEntry(el);
   };
