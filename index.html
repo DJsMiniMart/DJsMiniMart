@@ -1988,7 +1988,7 @@ function renderInvoiceEntry(el){
   const draftTotal = invoiceDraft.lines.reduce((s,l)=>s+num(l.total),0);
 
   el.innerHTML = `
-    <div class="note">Enter the invoice header once, add every line item on it, then submit the whole invoice in one go. Unit Cost auto-fills from Received Log when you pick a known product. Qty Received flows into Inventory Count and Received Log automatically.</div>
+    <div class="note">Enter the invoice header once, add every line item on it, then submit the whole invoice in one go. Unit Cost auto-fills from Received Log when you pick a known product. Qty Received flows into Inventory Count and Received Log automatically. If this delivery got a one-time discount on a product, enter it in Discount — it's subtracted from that line's total only and never changes the product's normal cost in Inventory.</div>
     <div class="card">
       <h2>New Invoice</h2>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
@@ -1997,12 +1997,13 @@ function renderInvoiceEntry(el){
         <div><label>Date</label><input id="ieDate" type="date" value="${invoiceDraft.date}"></div>
       </div>
       <h2 style="margin-top:6px;">Add Line Item</h2>
-      <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 1fr 1fr auto;">
+      <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr auto;">
         <div><label>Product Name</label><input id="ieName" list="ieProductList"></div>
         <div><label>Category</label><input id="ieCategory" list="ieCatList"></div>
         <div><label>Unit / Size</label><input id="ieUnit" list="ieUnitList" placeholder="12pk, 24oz..."></div>
         <div><label>Unit Cost</label><div class="dollar-wrap"><input id="ieCost" type="number" step="0.01"></div></div>
         <div><label>Qty Received</label><input id="ieQty" type="number"></div>
+        <div><label>One-Time Discount</label><div class="dollar-wrap"><input id="ieDiscount" type="number" step="0.01" placeholder="0.00"></div></div>
         <div><button class="btn" id="ieAddLineBtn">+ Add Line</button></div>
       </div>
       <datalist id="ieCatList">${catNames.map(c=>`<option value="${c}">`).join("")}</datalist>
@@ -2010,12 +2011,13 @@ function renderInvoiceEntry(el){
       <datalist id="ieUnitList"></datalist>
 
       <div class="tablewrap" style="max-height:280px;margin-top:10px;"><table>
-        <thead><tr><th>Product</th><th>Category</th><th>Unit</th><th>Cost</th><th>Qty</th><th>Line Total</th><th></th></tr></thead>
+        <thead><tr><th>Product</th><th>Category</th><th>Unit</th><th>Cost</th><th>Qty</th><th>Discount</th><th>Line Total</th><th></th></tr></thead>
         <tbody id="ieDraftBody">${invoiceDraft.lines.length ? invoiceDraft.lines.map((l,i)=>({l,i})).reverse().map(({l,i})=>`<tr>
           <td>${l.name}</td><td>${l.category}</td><td>${l.unit||""}</td><td>${fmtUSD(l.cost)}</td><td>${l.qty}</td>
+          <td>${num(l.discount) ? `<span style="color:var(--green);font-weight:700;">-${fmtUSD(l.discount)}</span>` : "—"}</td>
           <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(l.total).toFixed(2)}" data-total-line="${i}"></div></td>
           <td><button class="btn small" data-line="${i}">Remove</button></td></tr>`).join("") :
-          `<tr><td colspan="7" style="color:var(--text-dim);text-align:center;">No lines added yet</td></tr>`}
+          `<tr><td colspan="8" style="color:var(--text-dim);text-align:center;">No lines added yet</td></tr>`}
         </tbody>
       </table></div>
       <div class="flex" style="justify-content:space-between;margin-top:12px;">
@@ -2033,7 +2035,7 @@ function renderInvoiceEntry(el){
         <div><label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="ieShowReconciled" style="width:auto;"> Show reconciled invoices</label></div>
       </div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Product</th><th>Category</th><th>Unit Cost</th><th>Qty</th><th>Line Total</th><th>Distributor</th><th>Invoice #</th><th>Date</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Product</th><th>Category</th><th>Unit Cost</th><th>Qty</th><th>Discount</th><th>Line Total</th><th>Distributor</th><th>Invoice #</th><th>Date</th><th>Status</th><th></th></tr></thead>
         <tbody id="ieBody"></tbody>
       </table></div>
     </div>
@@ -2074,8 +2076,9 @@ function renderInvoiceEntry(el){
     const unit = document.getElementById('ieUnit').value.trim();
     const cost = parseFloat(document.getElementById('ieCost').value)||0;
     const qty = parseFloat(document.getElementById('ieQty').value)||0;
+    const discount = Math.abs(parseFloat(document.getElementById('ieDiscount').value)||0);
     if(!name || !qty){ toast("Enter a product name and quantity", true); return; }
-    invoiceDraft.lines.push({name, category, unit, cost, qty, total:+(cost*qty).toFixed(2)});
+    invoiceDraft.lines.push({name, category, unit, cost, qty, discount, total:+(cost*qty-discount).toFixed(2)});
     renderInvoiceEntry(el);
   };
   document.getElementById('ieDraftBody').querySelectorAll('[data-line]').forEach(b=>{
@@ -2106,9 +2109,10 @@ function renderInvoiceEntry(el){
     if(!distributor || !invoice){ toast("Enter a distributor and invoice #", true); return; }
     invoiceDraft.lines.forEach(l=>{
       DATA.invoiceEntries.unshift({name:l.name, category:l.category, unit:l.unit||"", cost:l.cost, qty:l.qty,
-        total:num(l.total), distributor, invoice, date, notes:""});
+        discount:num(l.discount), total:num(l.total), distributor, invoice, date, notes:""});
       const p = ensureProduct(l.name, l.category, l.unit, l.cost, 0);
       if(l.cost) p.cost = l.cost;
+      // Discount is a one-time reduction for this delivery only -- product's normal cost is never touched by it.
     });
     persist();
     toast(`Invoice ${invoice} submitted \u2014 ${invoiceDraft.lines.length} line items logged`);
@@ -2128,6 +2132,7 @@ function renderInvoiceEntry(el){
       const realIdx = DATA.invoiceEntries.indexOf(e);
       const tr = document.createElement('tr');
       tr.innerHTML = `<td>${e.name}</td><td>${e.category}</td><td>${fmtUSD(e.cost)}</td><td>${e.qty}</td>
+        <td>${num(e.discount) ? `<span style="color:var(--green);font-weight:700;">-${fmtUSD(e.discount)}</span>` : "—"}</td>
         <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(e.total).toFixed(2)}" data-total-idx="${realIdx}"></div></td>
         <td>${e.distributor}</td><td>${e.invoice}</td><td>${e.date?e.date.slice(0,10):""}</td>
         <td>${e.reconciled ? '<span class="pill ok">Reconciled</span>' : '<span class="pill warn">Pending</span>'}</td>
@@ -2160,9 +2165,10 @@ function renderInvoiceLog(el){
   const groups = {};
   DATA.invoiceEntries.forEach(e=>{
     if(!e.invoice) return;
-    if(!groups[e.invoice]) groups[e.invoice] = {invoice:e.invoice, distributor:e.distributor, date:e.date, lines:0, total:0, reconciledLines:0};
+    if(!groups[e.invoice]) groups[e.invoice] = {invoice:e.invoice, distributor:e.distributor, date:e.date, lines:0, total:0, discount:0, reconciledLines:0};
     groups[e.invoice].lines++;
     groups[e.invoice].total += num(e.total);
+    groups[e.invoice].discount += num(e.discount);
     if(e.reconciled) groups[e.invoice].reconciledLines++;
   });
   const allRows = Object.values(groups).map(g=>({...g, fullyReconciled: g.reconciledLines===g.lines})).sort((a,b)=> (b.date||"").localeCompare(a.date||""));
@@ -2185,17 +2191,17 @@ function renderInvoiceLog(el){
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="ilShowReconciledCk" ${ilShowReconciled?"checked":""} style="width:auto;"> Show reconciled invoices ${hiddenCount?`(${hiddenCount} hidden)`:""}</label>
       </div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Invoice #</th><th>Distributor</th><th>Date</th><th># Line Items</th><th>Invoice Total</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Invoice #</th><th>Distributor</th><th>Date</th><th># Line Items</th><th>Discount</th><th>Invoice Total</th><th>Status</th><th></th></tr></thead>
         <tbody id="ilBody">
         ${rows.length ? rows.map(r=>{
           const expanded = ilExpanded === r.invoice;
           const statusPill = r.fullyReconciled ? '<span class="pill ok">Reconciled</span>' : (r.reconciledLines>0 ? '<span class="pill warn">Partial</span>' : '<span class="pill warn">Pending</span>');
           const rowHtml = `<tr><td>${r.invoice}</td><td>${r.distributor}</td><td>${r.date?r.date.slice(0,10):""}</td>
-            <td>${r.lines}</td><td>${fmtUSD(r.total)}</td><td>${statusPill}</td>
+            <td>${r.lines}</td><td>${r.discount ? `<span style="color:var(--green);font-weight:700;">-${fmtUSD(r.discount)}</span>` : "\u2014"}</td><td>${fmtUSD(r.total)}</td><td>${statusPill}</td>
             <td class="btnrow"><button class="btn small" data-edit="${r.invoice.replace(/"/g,'&quot;')}">${expanded?"Close":"Edit"}</button><button class="btn small" data-toggle-reconciled="${r.invoice.replace(/"/g,'&quot;')}">${r.fullyReconciled?"Un-reconcile":"Mark Reconciled"}</button><button class="btn small danger" data-invoice="${r.invoice.replace(/"/g,'&quot;')}">Delete</button></td></tr>`;
           if(!expanded) return rowHtml;
           const lines = DATA.invoiceEntries.map((e,idx)=>({e,idx})).filter(({e})=>e.invoice===r.invoice);
-          const editHtml = `<tr><td colspan="7" style="padding:0;">
+          const editHtml = `<tr><td colspan="8" style="padding:0;">
             <div class="card" style="margin:8px 0;background:#F8FAFD;">
               <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
                 <div><label>Distributor</label><input class="editable-cell" id="ilEditDist" value="${r.distributor||""}"></div>
@@ -2203,7 +2209,7 @@ function renderInvoiceLog(el){
                 <div><label>Date</label><input class="editable-cell" type="date" id="ilEditDate" value="${r.date?r.date.slice(0,10):""}"></div>
               </div>
               <div class="tablewrap" style="margin-top:10px;"><table>
-                <thead><tr><th>Product</th><th>Category</th><th>Unit</th><th>Cost</th><th>Qty</th><th>Line Total</th><th>Reconciled</th><th></th></tr></thead>
+                <thead><tr><th>Product</th><th>Category</th><th>Unit</th><th>Cost</th><th>Qty</th><th>Discount</th><th>Line Total</th><th>Reconciled</th><th></th></tr></thead>
                 <tbody>
                 ${lines.map(({e,idx})=>`<tr>
                   <td><input class="editable-cell" value="${e.name||""}" data-line-idx="${idx}" data-line-field="name" list="ilNameList_${idx}"><datalist id="ilNameList_${idx}">${nameList.map(n=>`<option value="${n}">`).join("")}</datalist></td>
@@ -2211,6 +2217,7 @@ function renderInvoiceLog(el){
                   <td><input class="editable-cell" value="${e.unit||""}" data-line-idx="${idx}" data-line-field="unit"></td>
                   <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(e.cost).toFixed(2)}" data-line-idx="${idx}" data-line-field="cost"></div></td>
                   <td><input class="editable-cell" type="number" step="1" value="${num(e.qty)}" data-line-idx="${idx}" data-line-field="qty"></td>
+                  <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(e.discount).toFixed(2)}" data-line-idx="${idx}" data-line-field="discount"></div></td>
                   <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(e.total).toFixed(2)}" data-line-idx="${idx}" data-line-field="total"></div></td>
                   <td style="text-align:center;"><input type="checkbox" data-line-reconciled="${idx}" ${e.reconciled?"checked":""}></td>
                   <td><button class="btn small danger" data-remove-line="${idx}">Remove</button></td>
@@ -2221,7 +2228,7 @@ function renderInvoiceLog(el){
             </div>
           </td></tr>`;
           return rowHtml + editHtml;
-        }).join("") : `<tr><td colspan="7" style="color:var(--text-dim);text-align:center;">${ilShowReconciled ? "No invoices yet." : "No pending invoices \u2014 check \u201cShow reconciled invoices\u201d to see everything."}</td></tr>`}
+        }).join("") : `<tr><td colspan="8" style="color:var(--text-dim);text-align:center;">${ilShowReconciled ? "No invoices yet." : "No pending invoices \u2014 check \u201cShow reconciled invoices\u201d to see everything."}</td></tr>`}
         </tbody>
       </table></div>
       <datalist id="ilCatList">${catNames.map(c=>`<option value="${c}">`).join("")}</datalist>
@@ -2330,8 +2337,8 @@ function renderInvoiceLog(el){
         line[field] = inp.value;
         ensureProduct(line.name, line.category, line.unit, line.cost, 0);
       } else {
-        line[field] = parseFloat(inp.value)||0;
-        if(field==="cost" || field==="qty") line.total = +(num(line.cost)*num(line.qty)).toFixed(2);
+        line[field] = field==="discount" ? Math.abs(parseFloat(inp.value)||0) : (parseFloat(inp.value)||0);
+        if(field==="cost" || field==="qty" || field==="discount") line.total = +(num(line.cost)*num(line.qty)-num(line.discount)).toFixed(2);
       }
       persist(); renderInvoiceLog(el);
     };
@@ -2360,7 +2367,7 @@ function renderInvoiceLog(el){
   if(addBtn) addBtn.onclick = ()=>{
     const invoiceNum = addBtn.dataset.addFor;
     const g = groups[invoiceNum];
-    DATA.invoiceEntries.unshift({name:"", category:"", unit:"", cost:0, qty:1, total:0,
+    DATA.invoiceEntries.unshift({name:"", category:"", unit:"", cost:0, qty:1, discount:0, total:0,
       distributor: g?g.distributor:"", invoice: invoiceNum, date: g?g.date:null, notes:""});
     persist(); toast("Line item added \u2014 fill in the product details"); renderInvoiceLog(el);
   };
