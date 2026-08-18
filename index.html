@@ -1162,24 +1162,46 @@ function insightCard(text){
 }
 
 /* ---------- reusable multi-line chart with per-series high/low markers ---------- */
-function drawLineChartMulti(container, {categories, series, height=260}){
-  const w = 800, h = height, padL=16, padR=16, padT=22, padB=28;
+function drawLineChartMulti(container, {categories, series, height=260, yFmt}){
+  const w = 800, h = height, padL=50, padR=16, padT=22, padB=28;
   const allVals = series.flatMap(s=>s.values.filter(v=>v!==null && v!==undefined));
-  const maxV = Math.max(...allVals, 0);
-  const minV = Math.min(...allVals, 0);
+  const fmt = yFmt || (v => Math.round(v).toLocaleString());
+  // Auto-scale to the data's own range (instead of always forcing 0 into view) so
+  // lines that live in a narrow band still use the full height of the chart, with
+  // a little headroom top and bottom so points near the edge aren't clipped.
+  let rawMax = allVals.length ? Math.max(...allVals) : 1;
+  let rawMin = allVals.length ? Math.min(...allVals) : 0;
+  if(rawMax===rawMin){ rawMax += 1; rawMin -= 1; }
+  const rawRange = rawMax-rawMin;
+  const cushion = rawRange*0.12;
+  const maxV = rawMax+cushion;
+  // Don't let the padding push the axis below 0 when every value in the chart
+  // is already non-negative (dollar figures, percentages) - a negative gridline
+  // there would be confusing, not helpful.
+  const minV = (rawMin>=0 && rawMin-cushion<0) ? 0 : rawMin-cushion;
   const range = (maxV-minV)||1;
   const stepX = categories.length>1 ? (w-padL-padR)/(categories.length-1) : 0;
   const xFor = i => padL + i*stepX;
   const yFor = v => h-padB - ((v-minV)/range)*(h-padT-padB);
 
+  // Gridlines + y-axis labels so the scale is readable, not just relative line position.
   let svg = "";
+  const GRID_LINES = 4;
+  for(let g=0; g<=GRID_LINES; g++){
+    const v = minV + (range*g/GRID_LINES);
+    const y = yFor(v);
+    svg += `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="#E1E1E1" stroke-width="1"></line>`;
+    svg += `<text x="${padL-6}" y="${y+3}" font-size="9" text-anchor="end" fill="#767676">${fmt(v)}</text>`;
+  }
+
   series.forEach((s,si)=>{
     const color = s.color || BLUE_PALETTE[si % BLUE_PALETTE.length];
-    const strokeWidth = s.width || 2.4;
+    const strokeWidth = s.width || 2.6;
+    const dashAttr = s.dash ? ` stroke-dasharray="${s.dash}"` : "";
     const ptsArr = s.values.map((v,i)=> (v===null||v===undefined) ? null : [xFor(i), yFor(v)]);
     const pts = ptsArr.filter(Boolean).map(p=>p.join(",")).join(" ");
-    svg += `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="${strokeWidth}"></polyline>`;
-    ptsArr.forEach(p=>{ if(p) svg += `<circle cx="${p[0]}" cy="${p[1]}" r="2.6" fill="${color}"></circle>`; });
+    svg += `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="${strokeWidth}"${dashAttr}></polyline>`;
+    ptsArr.forEach(p=>{ if(p) svg += `<circle cx="${p[0]}" cy="${p[1]}" r="2.8" fill="${color}"></circle>`; });
     let maxI=-1,minI=-1,maxVal=-Infinity,minVal=Infinity;
     s.values.forEach((v,i)=>{ if(v===null||v===undefined) return; if(v>maxVal){maxVal=v;maxI=i;} if(v<minVal){minVal=v;minI=i;} });
     if(maxI>=0) svg += `<circle cx="${xFor(maxI)}" cy="${yFor(maxVal)}" r="6" fill="none" stroke="var(--green)" stroke-width="2"></circle>`;
@@ -1278,7 +1300,7 @@ function renderYoyFullDetail(el){
       width: y===years[years.length-1] ? 3.4 : 2.4,
       values: MONTHS.map(m=>{ const t=grid[m][y]; return (t.daysWithData>0||metric.key==="invoices"||metric.key==="rebates") ? t[metric.key] : null; })
     }));
-    drawLineChartMulti(document.getElementById(`fd-chart-${mi}`), {categories: MONTHS.map(m=>m.slice(0,3)), series, height:220});
+    drawLineChartMulti(document.getElementById(`fd-chart-${mi}`), {categories: MONTHS.map(m=>m.slice(0,3)), series, height:220, yFmt:metric.fmt});
   });
 }
 
@@ -1334,18 +1356,20 @@ function renderYoyAnnualSummary(el){
     categories: years,
     series: dollarMetrics.map((k,i)=>({
       label: YOY_METRICS.find(m=>m.key===k).label,
-      color: [ "#0B5394","#4B9CD3","#85C1E9" ][i],
+      color: [ "#1C6EA4","#E67E22","#27AE60" ][i],
       values: years.map(y=>yearlyMetricValue(y,k))
-    }))
+    })),
+    yFmt: fmtUSD0
   });
   const pctMetrics = ["grossMargin","markup"];
   drawLineChartMulti(document.getElementById('as-chart-pct'), {
     categories: years,
     series: pctMetrics.map((k,i)=>({
       label: YOY_METRICS.find(m=>m.key===k).label,
-      color: [ "#1C6EA4","#7BAFD4" ][i],
+      color: [ "#1C6EA4","#E67E22" ][i],
       values: years.map(y=>yearlyMetricValue(y,k))
-    }))
+    })),
+    yFmt: fmtPct
   });
 }
 
@@ -1383,7 +1407,8 @@ function renderYoyRecords(el){
   `;
   drawLineChartMulti(document.getElementById('rec-chart'), {
     categories: years,
-    series: [{label:"Total Sales", color:"#4B9CD3", values: years.map(y=>yearlyMetricValue(y,"combined"))}]
+    series: [{label:"Total Sales", color:"#1C6EA4", values: years.map(y=>yearlyMetricValue(y,"combined"))}],
+    yFmt: fmtUSD0
   });
 }
 
@@ -1434,20 +1459,21 @@ function renderYoyYearlyTrend(el){
     const x = pad+i*bw;
     const hC = (t.combined/maxV)*(h-pad*2);
     const hP = (Math.max(t.netProfit,0)/maxV)*(h-pad*2);
-    bars += `<rect x="${x+4}" y="${h-pad-hC}" width="${bw*0.35}" height="${hC}" fill="#7BAFD4"></rect>`;
-    bars += `<rect x="${x+8+bw*0.35}" y="${h-pad-hP}" width="${bw*0.35}" height="${hP}" fill="#4B9CD3"></rect>`;
+    bars += `<rect x="${x+4}" y="${h-pad-hC}" width="${bw*0.35}" height="${hC}" fill="#1C6EA4"></rect>`;
+    bars += `<rect x="${x+8+bw*0.35}" y="${h-pad-hP}" width="${bw*0.35}" height="${hP}" fill="#E67E22"></rect>`;
     bars += `<text x="${x+bw/2}" y="${h-16}" font-size="11" text-anchor="middle" fill="#767676">${t.year}</text>`;
   });
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="chart" style="height:260px">${bars}
-    <text x="${pad}" y="14" font-size="10" fill="#7BAFD4">\u25a0 Combined Sales</text>
-    <text x="${pad+130}" y="14" font-size="10" fill="#4B9CD3">\u25a0 Net Profit</text>
+    <text x="${pad}" y="14" font-size="10" fill="#1C6EA4">\u25a0 Combined Sales</text>
+    <text x="${pad+130}" y="14" font-size="10" fill="#E67E22">\u25a0 Net Profit</text>
   </svg>`;
   drawLineChartMulti(document.getElementById('yoyMarginChart'), {
     categories: years,
     series: [
       {label:"Gross Margin %", color:"#1C6EA4", values: years.map(y=>yearlyMetricValue(y,"grossMargin"))},
-      {label:"Purchase Markup %", color:"#7BAFD4", values: years.map(y=>yearlyMetricValue(y,"markup"))},
-    ]
+      {label:"Purchase Markup %", color:"#E67E22", values: years.map(y=>yearlyMetricValue(y,"markup"))},
+    ],
+    yFmt: fmtPct
   });
 }
 
@@ -1494,8 +1520,9 @@ function renderYoySeasonality(el){
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="chart">${bars}</svg>`;
   drawLineChartMulti(document.getElementById('seasonLineChart'), {
     categories: MONTHS.map(m=>m.slice(0,3)),
-    series: [{label:"Avg Net Store Revenue", color:"#4B9CD3", values: rows.map(r=>r.avg)}],
-    height: 200
+    series: [{label:"Avg Net Store Revenue", color:"#1C6EA4", values: rows.map(r=>r.avg)}],
+    height: 200,
+    yFmt: fmtUSD0
   });
 }
 
@@ -1579,11 +1606,11 @@ function renderForecastSeasonalPattern(el){
     label:y, color: BLUE_PALETTE[yi % BLUE_PALETTE.length],
     values: MONTHS.map(m=> table[y] ? table[y][m] : null)
   }));
-  series.push({label:`${years5.length}-Yr Avg`, color:"#13294B", values: rows.map(r=>r.avg5)});
+  series.push({label:`${years5.length}-Yr Avg`, color:"#13294B", width:3.6, values: rows.map(r=>r.avg5)});
   if(trackerYear){
-    series.push({label:`${trackerYear} (in progress)`, color:"#b3261e", values: MONTHS.map(m=> table[trackerYear] ? table[trackerYear][m] : null)});
+    series.push({label:`${trackerYear} (in progress)`, color:"#b3261e", width:3, dash:"6,4", values: MONTHS.map(m=> table[trackerYear] ? table[trackerYear][m] : null)});
   }
-  drawLineChartMulti(document.getElementById('seasonalPatternChart'), {categories: MONTHS.map(m=>m.slice(0,3)), series, height:280});
+  drawLineChartMulti(document.getElementById('seasonalPatternChart'), {categories: MONTHS.map(m=>m.slice(0,3)), series, height:280, yFmt: fmtUSD0});
 }
 
 /* ---------- Decline Consistency: bar chart of % years declining, by month ---------- */
@@ -1651,10 +1678,11 @@ function renderForecastTracker(el){
   drawLineChartMulti(container, {
     categories: MONTHS.map(m=>m.slice(0,3)),
     series: [
-      {label:`${trackerYear} Actual`, color:"#b3261e", values: trackerRows.map(r=>r.actual)},
-      {label:`${years5.length}-Yr Avg`, color:"#4B9CD3", values: trackerRows.map(r=>r.avg5)},
+      {label:`${trackerYear} Actual`, color:"#b3261e", width:3, values: trackerRows.map(r=>r.actual)},
+      {label:`${years5.length}-Yr Avg`, color:"#1C6EA4", width:3, dash:"6,4", values: trackerRows.map(r=>r.avg5)},
     ],
-    height: 240
+    height: 240,
+    yFmt: fmtUSD0
   });
 }
 
