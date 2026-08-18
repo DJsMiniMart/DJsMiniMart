@@ -146,6 +146,18 @@
   table{font-size:12.5px;}
   button.btn{padding:9px 12px;}
 }
+.phase{border-left:4px solid var(--navy);padding:2px 0 4px 16px;margin-bottom:20px;}
+.phase:last-child{margin-bottom:4px;}
+.phase-head{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
+.phase-num{flex-shrink:0;width:24px;height:24px;border-radius:50%;background:var(--navy);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;}
+.phase-title{font-weight:700;font-size:14.5px;}
+.phase ol{margin:0 0 0 20px;padding:0;line-height:1.75;font-size:13.5px;}
+.phase li{margin-bottom:6px;}
+.subblock{background:#F8FAFD;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:8px 0 10px;}
+.subblock-title{font-weight:600;font-size:12.5px;color:var(--navy);margin-bottom:6px;}
+.warn-box{background:#FFF3CD;border:1px solid #F0DFA0;border-radius:8px;padding:8px 12px;font-size:12.5px;color:#8a6d00;margin:8px 0;}
+.jumplist{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px;}
+.jumplist a{font-size:12px;padding:5px 11px;border-radius:20px;border:1px solid var(--border);background:#fff;color:var(--navy);text-decoration:none;font-weight:600;}
 </style>
 </head>
 <body>
@@ -3177,7 +3189,103 @@ const STATION_OPS_TABS = [
   {id:"closing", label:"Closing Procedures"},
   {id:"shiftChange", label:"Shift Change"},
   {id:"safety", label:"Emergency & Safety"},
+  {id:"stjoe", label:"Ordering: St. Joe"},
+  {id:"logins", label:"Important Websites & Logins"},
 ];
+const LOGINS = [
+  { company:"Southern Glazer", site:"https://shop.sgproof.com/search?text=wild%20turkey%20honey", usedFor:"Placing Liquor Orders (must be in by Thursday at 4:00)", login:"heiloildjs2@gmail.com", password:"Rockybalboa#42" },
+  { company:"RJ Reynolds", site:"https://www.engagevip.com/s/login/?ec=302&startURL=%2Fs%2F", usedFor:"Pricing, Payments, Discount Changes", login:"heiloildjs2@gmail.com", password:"HeilOil2" },
+  { company:"Altria", site:"https://www.insightsc3m.com/security/login", usedFor:"Pricing, Payments, Discount Changes", login:"HeilOilDJs2", password:"HeilOil#2" },
+  { company:"Altria", site:"https://www.agdcnow.com/login?ec=302&startURL=%2Fprice-promotion-management", usedFor:"Pricing, Payments, Discount Changes", login:"5737478490", password:"Will give one-time code to cell" },
+  { company:"Skupos", site:"https://go.skupos.com/chain", usedFor:"Loyalty and Scan Data", login:"HeilOilDJs2", password:"Rockybalboa#5" },
+];
+const LOGINS_CONTENT_HTML = `
+<div class="card">
+  <h2>Important Websites &amp; Logins <span class="pill ok">Final</span></h2>
+  <div class="sub">Vendor and account portals used to run the station.</div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Company</th><th>Site</th><th>What It's Used For</th><th>Login</th><th>Password</th></tr></thead>
+    <tbody>
+      ${LOGINS.map(r=>`<tr>
+        <td>${r.company}</td>
+        <td><a class="linklike" href="${r.site}" target="_blank" rel="noopener">Open site</a></td>
+        <td>${r.usedFor}</td>
+        <td>${r.login}</td>
+        <td style="font-family:monospace;">${r.password}</td>
+      </tr>`).join("")}
+    </tbody>
+  </table></div>
+</div>
+`;
+const STJOE_CONTENT_HTML = `
+<div class="status-banner bad" style="display:inline-block;">⏰ Order must be in by <b>Wednesday at 10:00</b></div>
+<div class="note">If CTech is closed it can be found in the Start menu. Don't use CTech Sync.</div>
+<div class="card">
+  <h2>Ordering: St. Joe <span class="pill ok">Final</span></h2>
+  <div class="sub">Placing a weekly order to St. Joe using the CTech handheld — 4 phases, start to finish.</div>
+
+  <div class="jumplist">
+    <a href="#p1">1. Connect</a>
+    <a href="#p2">2. Review Bookings</a>
+    <a href="#p3">3. Build the Order</a>
+    <a href="#p4">4. Finish &amp; Send</a>
+  </div>
+
+  <div class="phase" id="p1">
+    <div class="phase-head"><span class="phase-num">1</span><span class="phase-title">Connect to Corporate</span></div>
+    <ol>
+      <li>With the pen, press <b>&ldquo;Connect to Corporate&rdquo;</b> &rarr; <b>&ldquo;Connect Now&rdquo;</b> &rarr; <b>&ldquo;Yes&rdquo;</b>. This makes sure you're ordering from the most recent St. Joe inventory.</li>
+      <li>If the connection doesn't work, try again — up to 3 times — before calling for help.</li>
+    </ol>
+  </div>
+
+  <div class="phase" id="p2">
+    <div class="phase-head"><span class="phase-num">2</span><span class="phase-title">Review Pre-Booked Items</span></div>
+    <ol>
+      <li>Go to <b>&ldquo;Product Info&rdquo;</b> &rarr; <b>&ldquo;Review Bookings&rdquo;</b> and check items already pre-booked. Some may have come from WAM, a Contract, or St. Joe.</li>
+      <li>Reviewing these first makes over-ordering any product less likely.</li>
+    </ol>
+  </div>
+
+  <div class="phase" id="p3">
+    <div class="phase-head"><span class="phase-num">3</span><span class="phase-title">Build the Order</span></div>
+    <ol>
+      <li>Back at the Main Menu, go to <b>&ldquo;Orders&rdquo;</b> &rarr; <b>&ldquo;Generate Order&rdquo;</b> to start.</li>
+      <li>Add each product one of two ways:</li>
+    </ol>
+    <div class="subblock">
+      <div class="subblock-title">OPTION A — Scan the barcode</div>
+      <ol>
+        <li>Scan the label St. Joe provided, or the product's own label. Its info appears on the handheld.</li>
+        <li>Check <b>&ldquo;Pack:&rdquo;</b> before setting quantity — some products are singles, others come by the case.</li>
+        <li>Check Cost, SRP, Last Order, and whether the product is guaranteed.</li>
+        <li>Set the <b>&ldquo;Order Qty&rdquo;</b> with the +/&minus; buttons or by tapping the box (&ldquo;C&rdquo; clears it), then hit <b>&ldquo;Done&rdquo;</b>.</li>
+        <li>Back on &ldquo;Order Items&rdquo;, press <b>&ldquo;Add&rdquo;</b> to scan the next product and repeat.</li>
+      </ol>
+      <div class="warn-box">⚠️ &ldquo;Units on Hand&rdquo; on the handheld is not accurate — don't rely on it to judge quantity.</div>
+    </div>
+    <div class="subblock">
+      <div class="subblock-title">OPTION B — No label / order by product number</div>
+      <ol>
+        <li>Look up the number in the <b>St. Joe Product Listing Book</b> (right-side drawer, underneath the printer) — it lists every product number, unit cost, SRP, unit type, and guarantee status.</li>
+        <li>On the Order screen, press <b>&ldquo;Find&rdquo;</b> and type the item number — or press <b>&ldquo;Search&rdquo;</b> to look up by Name or Item ID.</li>
+        <li>Once found, add it the same way as step 3iii above (set quantity, hit Done).</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="phase" id="p4">
+    <div class="phase-head"><span class="phase-num">4</span><span class="phase-title">Finish &amp; Send</span></div>
+    <ol>
+      <li>Once every product is added, hit <b>&ldquo;Totals&rdquo;</b> at the bottom of the screen.</li>
+      <li>Check &ldquo;Total Items&rdquo;, &ldquo;Total Unit&rdquo;, and &ldquo;Total Cost&rdquo; against the previous invoice for a rough sanity check, then hit <b>&ldquo;Finish&rdquo;</b> &rarr; <b>&ldquo;Yes&rdquo;</b>.</li>
+      <li>On &ldquo;Connection Summary&rdquo;, press <b>&ldquo;Connect Now&rdquo;</b> &rarr; <b>&ldquo;Yes&rdquo;</b>.</li>
+      <li>The handheld connects to St. Joe — can take a few minutes. A &ldquo;successfully sent&rdquo; message confirms it went through.</li>
+    </ol>
+  </div>
+</div>
+<div class="note">Reference: St. Joe Product Listing Book, kept in the right-side drawer underneath the printer — used for products without a scannable label.</div>
+`;
 const STATION_OPS_PLACEHOLDER = {
   opening: {
     title: "Opening Procedures",
@@ -3226,7 +3334,7 @@ function renderStationOperations(main){
       <div><h1>Station Operations</h1><p>Step-by-step daily operating procedures.</p></div>
     </div>
     <div class="status-banner ok" style="display:flex;align-items:center;gap:8px;">
-      \ud83d\udea7 <div><b>Preview / Work in Progress</b> \u2014 the layout below shows how this section will work. The example steps are placeholders; final step-by-step instructions are being written and will replace them here.</div>
+      \u2705 <div><b>Ordering: St. Joe is finalized</b> \u2014 the other tabs below are still placeholder examples; final step-by-step instructions for those are being written and will replace them here.</div>
     </div>
     <div class="subtabs" id="stationOpsSubTabs"></div>
     <div id="stationOpsContent"></div>
@@ -3240,6 +3348,14 @@ function renderStationOperations(main){
     tabsEl.appendChild(b);
   });
   const content = document.getElementById('stationOpsContent');
+  if(stationOpsTab==="stjoe"){
+    content.innerHTML = STJOE_CONTENT_HTML;
+    return;
+  }
+  if(stationOpsTab==="logins"){
+    content.innerHTML = LOGINS_CONTENT_HTML;
+    return;
+  }
   const section = STATION_OPS_PLACEHOLDER[stationOpsTab];
   content.innerHTML = `
     <div class="card">
