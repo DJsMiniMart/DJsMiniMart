@@ -3183,12 +3183,8 @@ function renderBuydowns(el){
 
 /* ===================== VIEW: DATA MGMT ===================== */
 /* ===================== VIEW: STATION OPERATIONS (preview / placeholder) ===================== */
-let stationOpsTab = "opening";
+let stationOpsTab = "stjoe";
 const STATION_OPS_TABS = [
-  {id:"opening", label:"Opening Procedures"},
-  {id:"closing", label:"Closing Procedures"},
-  {id:"shiftChange", label:"Shift Change"},
-  {id:"safety", label:"Emergency & Safety"},
   {id:"stjoe", label:"Ordering: St. Joe"},
   {id:"logins", label:"Important Websites & Logins"},
 ];
@@ -3286,55 +3282,10 @@ const STJOE_CONTENT_HTML = `
 </div>
 <div class="note">Reference: St. Joe Product Listing Book, kept in the right-side drawer underneath the printer — used for products without a scannable label.</div>
 `;
-const STATION_OPS_PLACEHOLDER = {
-  opening: {
-    title: "Opening Procedures",
-    steps: [
-      "Unlock and disarm the alarm system",
-      "Turn on lights, coolers, and fuel pumps",
-      "Count and record the starting register drawer",
-      "Check overnight fuel tank readings",
-      "Review notes left from the previous closing shift",
-      "Walk the store for stocking or cleanliness issues",
-    ]
-  },
-  closing: {
-    title: "Closing Procedures",
-    steps: [
-      "Run and print the closing sales report",
-      "Count and reconcile the register drawer",
-      "Lock fuel pumps for the night",
-      "Secure all doors and set the alarm",
-      "Prep bank deposit",
-      "Leave notes for the opening shift",
-    ]
-  },
-  shiftChange: {
-    title: "Shift Change",
-    steps: [
-      "Count and verify the drawer together with the incoming employee",
-      "Walk through any outstanding tasks or customer issues",
-      "Note any equipment problems (pumps, coolers, registers)",
-      "Both employees sign the shift log",
-    ]
-  },
-  safety: {
-    title: "Emergency & Safety",
-    steps: [
-      "Know fire extinguisher and first-aid kit locations",
-      "Post and review emergency contact numbers",
-      "Follow spill and fuel-leak procedures",
-      "Know the robbery/safety protocol and panic button location",
-    ]
-  },
-};
 function renderStationOperations(main){
   main.innerHTML = `
     <div class="topbar">
       <div><h1>Station Operations</h1><p>Step-by-step daily operating procedures.</p></div>
-    </div>
-    <div class="status-banner ok" style="display:flex;align-items:center;gap:8px;">
-      \u2705 <div><b>Ordering: St. Joe is finalized</b> \u2014 the other tabs below are still placeholder examples; final step-by-step instructions for those are being written and will replace them here.</div>
     </div>
     <div class="subtabs" id="stationOpsSubTabs"></div>
     <div id="stationOpsContent"></div>
@@ -3356,17 +3307,6 @@ function renderStationOperations(main){
     content.innerHTML = LOGINS_CONTENT_HTML;
     return;
   }
-  const section = STATION_OPS_PLACEHOLDER[stationOpsTab];
-  content.innerHTML = `
-    <div class="card">
-      <h2>${section.title} <span class="pill warn">Example \u2014 not final</span></h2>
-      <div class="sub">Numbered steps will walk staff through this procedure in order, like the example below.</div>
-      <ol style="margin:10px 0 0 20px;padding:0;line-height:1.9;">
-        ${section.steps.map(s=>`<li>${s}</li>`).join("")}
-      </ol>
-    </div>
-    <div class="note">Once the real procedures are ready, each step here can include more detail, photos, or checkboxes staff can mark off during the shift.</div>
-  `;
 }
 
 
