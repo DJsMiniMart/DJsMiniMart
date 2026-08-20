@@ -83139,7 +83139,7 @@ function renderReceivedLog(el){
         <div><label>Category</label><select id="rlCatFilter"><option value="ALL">All Categories</option>${catNames.map(c=>`<option value="${c}">${c}</option>`).join("")}</select></div>
       </div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Product Name</th><th>Category</th><th>Unit / Size</th><th>Unit Cost</th><th>Retail Price</th><th>Qty Received</th><th>Notes</th></tr></thead>
+        <thead><tr><th>Product Name</th><th>Category</th><th>Unit / Size</th><th>Unit Cost</th><th>Retail Price</th><th>Qty Received</th><th>Notes</th><th></th></tr></thead>
         <tbody id="rlBody"></tbody>
       </table></div>
     </div>
@@ -83173,7 +83173,8 @@ function renderReceivedLog(el){
         <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(p.cost).toFixed(2)}" data-field="cost" data-num="${p.num}" data-cat="${p.category}"></div></td>
         <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(p.retail).toFixed(2)}" data-field="retail" data-num="${p.num}" data-cat="${p.category}"></div></td>
         <td>${productReceived(p)}</td>
-        <td><input class="editable-cell" value="${p.notes||""}" data-field="notes" data-num="${p.num}" data-cat="${p.category}"></td>`;
+        <td><input class="editable-cell" value="${p.notes||""}" data-field="notes" data-num="${p.num}" data-cat="${p.category}"></td>
+        <td><button class="btn small danger" data-del-num="${p.num}" data-del-cat="${p.category}">Delete</button></td>`;
       body.appendChild(tr);
     });
     body.querySelectorAll('input.editable-cell').forEach(inp=>{
@@ -83188,6 +83189,17 @@ function renderReceivedLog(el){
           p.sales_value = +(num(p.closing)*num(p.retail)).toFixed(2);
         }
         persist(); draw();
+      };
+    });
+    body.querySelectorAll('[data-del-num]').forEach(btn=>{
+      btn.onclick = ()=>{
+        const p = DATA.inventory.find(x=>x.num===parseInt(btn.dataset.delNum) && x.category===btn.dataset.delCat);
+        if(!p) return;
+        const received = productReceived(p);
+        const warning = received>0 ? ` It currently shows ${received} received.` : "";
+        if(!confirm(`Permanently delete "${p.name}" (${p.category}) from the product register?${warning} This can't be undone and won't remove past delivery log entries.`)) return;
+        DATA.inventory = DATA.inventory.filter(x=>x!==p);
+        persist(); toast("Product deleted"); renderReceivedLog(el);
       };
     });
   }
@@ -84520,13 +84532,14 @@ const DEPTNUMBERS_CONTENT_HTML = `
 const INVOICES_CONTENT_HTML = `
 <div class="card">
   <h2>How to Do Invoices <span class="pill ok">Final</span></h2>
-  <div class="sub">Entering invoice information onto the DJ&rsquo;s Mini Mart site, then recording the invoice in the AS400.</div>
+  <div class="sub">Entering invoice information onto the DJ&rsquo;s Mini Mart site, then recording and finalizing the invoice in the AS400.</div>
 
   <div class="jumplist">
     <a href="#i1">1. Invoice Entry</a>
     <a href="#i2">2. Add Products</a>
     <a href="#i3">3. Sales &amp; Margins</a>
     <a href="#i4">4. Record in AS400</a>
+    <a href="#i5">5. Edit &amp; Finalize</a>
   </div>
 
   <div class="phase" id="i1">
@@ -84602,11 +84615,14 @@ const INVOICES_CONTENT_HTML = `
       </ol>
       <div class="subblock" style="margin-left:0;">
         <div class="subblock-title">IF THE DOLLAR AMOUNTS DON&rsquo;T MATCH</div>
-        <ol>
-          <li>Recent price change &rarr; make sure it&rsquo;s reflected in both the DJ&rsquo;s Mini Mart site and the AS400.</li>
-          <li>Entered the wrong quantity &rarr; select the &ldquo;Quantity&rdquo; section and change it to the correct amount.</li>
-          <li>The product quantity doesn&rsquo;t evenly divide (example: $22.00 / 12 = $1.833333).</li>
-        </ol>
+        <div class="tablewrap"><table>
+          <thead><tr><th>Possible Cause</th><th>What To Do</th></tr></thead>
+          <tbody>
+            <tr><td>Recent price change</td><td>Make sure it&rsquo;s reflected in both the DJ&rsquo;s Mini Mart site and the AS400.</td></tr>
+            <tr><td>Wrong quantity entered</td><td>Select the &ldquo;Quantity&rdquo; section and change it to the correct amount.</td></tr>
+            <tr><td>Quantity doesn&rsquo;t evenly divide</td><td>Expected with some units &mdash; example: $22.00 / 12 = $1.833333. Not necessarily an error.</td></tr>
+          </tbody>
+        </table></div>
       </div>
       <ol start="8">
         <li>Once the product&rsquo;s information is fully entered, hit enter and repeat these steps until the invoice is completely scanned.</li>
@@ -84620,8 +84636,33 @@ const INVOICES_CONTENT_HTML = `
         <li>Followed by option <b>2: Receive Invoice</b>.</li>
         <li>On the next screen enter the Vendor Code, Invoice Number, Invoice Amount, and Invoice Date.</li>
         <li>Once all the information is correct, hit enter to create the invoice.</li>
-        <li>Enter any PLU# and quantity, then hit enter &mdash; no need to enter any more product from this screen. This just creates the invoice; all adjustments and additions are made later (see &ldquo;Editing and Finalizing Invoices&rdquo;).</li>
+        <li>Enter any PLU# and quantity, then hit enter &mdash; no need to enter any more product from this screen. This just creates the invoice; all adjustments and additions are made later (see <a class="linklike" href="#i5">&ldquo;Edit &amp; Finalize&rdquo;</a> below).</li>
       </ol>
+    </div>
+  </div>
+
+  <div class="phase" id="i5">
+    <div class="phase-head"><span class="phase-num">5</span><span class="phase-title">Editing &amp; Finalizing an Invoice in the AS400</span></div>
+    <ol>
+      <li>From the AS400 Main Page, type <b>17: Vendor Invoice Processing</b>, then <b>16: Correct Scanned Inv-New</b>.</li>
+      <li>Select the invoice to edit one of two ways: type the vendor&rsquo;s 4-digit code to bring up all invoices for that vendor, or press enter to bring up every entered invoice for all vendors.</li>
+      <li>Put an &ldquo;X&rdquo; in the far-left column next to the invoice you want and press enter.</li>
+      <li>Confirm the invoice&rsquo;s information and press enter: Amount (no decimal points), Invoice Number, and Date.</li>
+    </ol>
+    <div class="warn-box">⚠️ <b>F6</b> on this screen lets you change the vendor code &mdash; this is your last chance to do so.</div>
+    <div class="subblock">
+      <div class="subblock-title">FINALIZING THE INVOICE</div>
+      <div class="sub" style="margin-bottom:8px;">The total amount must match the amount entered on the previous screen. Use the function keys below to make corrections:</div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Key</th><th>Action</th><th>When to Use It</th></tr></thead>
+        <tbody>
+          <tr><td><b>F1</b></td><td>Add a New Line</td><td>A new PLU was scanned and needs to be added to the PLU file. Fill out the product&rsquo;s information on the next page.</td></tr>
+          <tr><td><b>F3</b></td><td>Restart</td><td>Takes you back to the &ldquo;16&rdquo; correction screen.</td></tr>
+          <tr><td><b>F9</b></td><td>Finish / Update</td><td>Completes the invoice once the total matches the amount entered earlier.</td></tr>
+          <tr><td><b>F10</b></td><td>Add Line</td><td>Add a product that already exists to the invoice. Use this if the invoice was submitted using the AS400 rather than the handheld.</td></tr>
+          <tr><td><b>D</b></td><td>Delete Line</td><td>Place a &ldquo;D&rdquo; in the far-left column next to a product to remove it from the invoice.</td></tr>
+        </tbody>
+      </table></div>
     </div>
   </div>
 </div>
