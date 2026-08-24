@@ -82103,11 +82103,12 @@ function renderSales(main){
         <div class="form-grid">
           <div><label>Company</label><input id="invCompany"></div>
           <div><label>Invoice #</label><input id="invNum"></div>
+          <div><label>Date</label><input id="invDate" type="date"></div>
           <div><label>Amount ($)</label><input id="invAmt" type="number" step="0.01"></div>
           <div><button class="btn primary" id="addInvBtn">Add</button></div>
         </div>
         <div class="tablewrap" style="max-height:280px"><table>
-          <thead><tr><th>Company</th><th>Invoice #</th><th>Amount</th><th></th></tr></thead>
+          <thead><tr><th>Company</th><th>Invoice #</th><th>Date</th><th>Amount</th><th></th></tr></thead>
           <tbody id="invBody"></tbody>
         </table></div>
       </div>
@@ -82161,7 +82162,7 @@ function renderSales(main){
   const invBody = document.getElementById('invBody');
   md.invoices.forEach((inv,idx)=>{
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${inv.company}</td><td>${inv.invoice||""}</td><td>${fmtUSD(inv.amount)}</td>
+    tr.innerHTML = `<td>${inv.company}</td><td>${inv.invoice||""}</td><td>${inv.date?inv.date.slice(0,10):"—"}</td><td>${fmtUSD(inv.amount)}</td>
       <td><button class="btn small" data-idx="${idx}">Remove</button></td>`;
     invBody.appendChild(tr);
   });
@@ -82174,9 +82175,10 @@ function renderSales(main){
   document.getElementById('addInvBtn').onclick = ()=>{
     const company = document.getElementById('invCompany').value.trim();
     const invNum = document.getElementById('invNum').value.trim();
+    const date = document.getElementById('invDate').value || null;
     const amt = parseFloat(document.getElementById('invAmt').value);
     if(!company || isNaN(amt)){ toast("Enter a company and amount", true); return; }
-    md.invoices.push({company, invoice:invNum, amount:amt, date:null});
+    md.invoices.push({company, invoice:invNum, amount:amt, date});
     persist(); render();
   };
 
@@ -83437,7 +83439,7 @@ function renderInvoiceLog(el){
   const catNames = [...new Set(DATA.inventory.map(p=>p.category))].sort();
   const nameList = [...new Set(DATA.inventory.map(p=>p.name))];
   el.innerHTML = `
-    <div class="note">Automatically grouped from Invoice Entry lines by Invoice #. ${allRows.length.toLocaleString()} invoices on file, totaling ${fmtUSD(allRows.reduce((s,r)=>s+r.total,0))}. Click Edit to change the distributor, invoice #, date, or individual line items.</div>
+    <div class="note">Automatically grouped from Invoice Entry lines by Invoice #. ${allRows.length.toLocaleString()} invoices on file, totaling ${fmtUSD(allRows.reduce((s,r)=>s+r.total,0))}. Click Edit to change the company, invoice #, date, or individual line items.</div>
     <div class="card">
       <h2>Reconcile a Count Period</h2>
       <div class="note" style="margin-top:0;">After you roll a count (Closing \u2192 Opening), mark the invoices that were part of that count as reconciled so they stop counting toward Received Qty next period. This keeps the invoices on file for reference \u2014 nothing is deleted. Pick your count date below and everything dated on or before it gets marked.</div>
@@ -83451,7 +83453,7 @@ function renderInvoiceLog(el){
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="ilShowReconciledCk" ${ilShowReconciled?"checked":""} style="width:auto;"> Show reconciled invoices ${hiddenCount?`(${hiddenCount} hidden)`:""}</label>
       </div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Invoice #</th><th>Distributor</th><th>Date</th><th># Line Items</th><th>Discount</th><th>Invoice Total</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Invoice #</th><th>Company</th><th>Date</th><th># Line Items</th><th>Discount</th><th>Invoice Total</th><th>Status</th><th></th></tr></thead>
         <tbody id="ilBody">
         ${rows.length ? rows.map(r=>{
           const expanded = ilExpanded === r.invoice;
@@ -83464,7 +83466,7 @@ function renderInvoiceLog(el){
           const editHtml = `<tr><td colspan="8" style="padding:0;">
             <div class="card" style="margin:8px 0;background:#F8FAFD;">
               <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
-                <div><label>Distributor</label><input class="editable-cell" id="ilEditDist" value="${r.distributor||""}"></div>
+                <div><label>Company</label><input class="editable-cell" id="ilEditDist" value="${r.distributor||""}"></div>
                 <div><label>Invoice #</label><input class="editable-cell" id="ilEditInvoice" value="${r.invoice||""}"></div>
                 <div><label>Date</label><input class="editable-cell" type="date" id="ilEditDate" value="${r.date?r.date.slice(0,10):""}"></div>
               </div>
@@ -83569,7 +83571,7 @@ function renderInvoiceLog(el){
     const oldInvoice = ilExpanded;
     const val = distInp.value.trim();
     DATA.invoiceEntries.forEach(e=>{ if(e.invoice===oldInvoice) e.distributor = val; });
-    persist(); toast("Distributor updated"); renderInvoiceLog(el);
+    persist(); toast("Company updated"); renderInvoiceLog(el);
   };
   if(invInp) invInp.onchange = ()=>{
     const oldInvoice = ilExpanded;
