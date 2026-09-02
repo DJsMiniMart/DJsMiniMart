@@ -84354,6 +84354,7 @@ const STATION_OPS_TABS = [
   {id:"documents", label:"Important Documents"},
   {id:"deptnumbers", label:"Vendor Numbers"},
   {id:"invoices", label:"How to Do Invoices"},
+  {id:"closingdrawer", label:"Closing Drawer"},
 ];
 const DOCUMENTS = [
   { title:"Chew Order Sheet", desc:"St. Joe scan book — chew, dip, and snuff barcodes for ordering.", file:"chew-order-sheet.pdf" },
@@ -84669,10 +84670,169 @@ const INVOICES_CONTENT_HTML = `
   </div>
 </div>
 `;
+const CLOSINGDRAWER_CONTENT_HTML = `
+<div class="status-banner bad" style="display:inline-block;">🔑 Closing <b>Drawer #1</b>? Do Phases 1&ndash;3, then skip to Phase 6 and stop.</div>
+<div class="card">
+  <h2>Closing Drawer <span class="pill ok">Final</span></h2>
+  <div class="sub">Counting down a drawer, closing out the register, and (for the evening shift) closing the day and filling out the Daily Sheet &mdash; 10 phases, start to finish.</div>
+
+  <div class="jumplist">
+    <a href="#cd1">1. Make the Bag Whole</a>
+    <a href="#cd2">2. Count &amp; Divide the Change</a>
+    <a href="#cd3">3. Count &amp; Secure the Cash</a>
+    <a href="#cd4">4. Print Evening Paperwork</a>
+    <a href="#cd5">5. Close Cashier Report</a>
+    <a href="#cd6">6. Close Day Report</a>
+    <a href="#cd7">7. Open the Next Drawer</a>
+    <a href="#cd8">8. Daily Sheet &mdash; Bottom Table</a>
+    <a href="#cd9">9. Daily Sheet &mdash; Top Section</a>
+    <a href="#cd10">10. Finish Up</a>
+  </div>
+
+  <div class="phase" id="cd1">
+    <div class="phase-head"><span class="phase-num">1</span><span class="phase-title">Make the &ldquo;Bag&rdquo; Whole</span></div>
+    <ol>
+      <li>Each drawer will start with an even <b>$250</b>.</li>
+    </ol>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Denomination</th><th>Count</th><th>Total</th></tr></thead>
+      <tbody>
+        <tr><td>$20 bills</td><td>5</td><td>$100</td></tr>
+        <tr><td>$10 bills</td><td>5</td><td>$50</td></tr>
+        <tr><td>$5 bills</td><td>10</td><td>$50</td></tr>
+        <tr><td>$1 bills</td><td>50</td><td>$50</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="phase" id="cd2">
+    <div class="phase-head"><span class="phase-num">2</span><span class="phase-title">Count &amp; Divide the Change</span></div>
+    <ol>
+      <li>Take all the change from the register and count it. Look to make the highest full-dollar amount.</li>
+    </ol>
+    <div class="subblock">
+      <div class="subblock-title">EXAMPLE — $9.35 in change</div>
+      <ol>
+        <li>Take away the &ldquo;odd&rdquo; $.35 and put it in your &ldquo;drop bag&rdquo; (a beer sleeve that holds receipts and paperwork).</li>
+        <li>From the &ldquo;Bag&rdquo; that has the $250, take out the full-dollar amount of the change &mdash; here, $9 (1&ndash;$5 and 4&ndash;$1) &mdash; and put it in the shift drawer/the drawer being counted.</li>
+        <li>The &ldquo;Bag&rdquo; now has $241 in cash. Combined with the $9 in change, that makes an even $250 starting point for the next shift&rsquo;s drawer.</li>
+        <li>Morning shift puts the $9 in change into the drawer. Evening shift puts the $9 in a clear plastic tray with a note stating the amount.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="phase" id="cd3">
+    <div class="phase-head"><span class="phase-num">3</span><span class="phase-title">Count &amp; Secure the Cash</span></div>
+    <ol>
+      <li>Count the cash in the drawer, making sure all the bills are facing the same way.</li>
+      <li>Write the total on the Daily Sheet and on a strip of paper.</li>
+      <li>Rubber band the cash and place it in the safe with any money from safe drops.</li>
+    </ol>
+  </div>
+
+  <div class="phase" id="cd4">
+    <div class="phase-head"><span class="phase-num">4</span><span class="phase-title">Print Evening Paperwork</span></div>
+    <div class="note" style="margin-bottom:10px;">Closing the evening drawer needs paperwork printed out.</div>
+    <ol>
+      <li>CSR Func &rarr; <b>#2 Network Menu</b>.</li>
+      <li><b>#9 Loyalty Reports</b>: print #1 &mdash; the batch number is always 0. (If the screen says &ldquo;can&rsquo;t not open,&rdquo; press the print report anyway.) At times the report won&rsquo;t display but will still print. Once printed, press &ldquo;Previous Screen.&rdquo; You may have to press #9 Loyalty Reports again to get report #2 &mdash; follow the same steps as for report #1.</li>
+      <li>Under the #2 Network Menu, go to <b>EPS Network Reports</b> &rarr; <b>#1 Terminal Summary Report</b> and print it. This report is the CC Electronic figure on the Daily Sheet.</li>
+      <li>Press &ldquo;Previous Menu&rdquo; until back at the main CSR Func screen.</li>
+      <li>From the main CSR Func screen, go to <b>#2 Network Mail</b> &rarr; <b>#3 EPS Network Functions</b>.</li>
+      <li>From there, <b>#18 Network Mail</b> &rarr; <b>#7 Settlement New</b> and print out #1 &mdash; this should be today&rsquo;s date.</li>
+    </ol>
+  </div>
+
+  <div class="phase" id="cd5">
+    <div class="phase-head"><span class="phase-num">5</span><span class="phase-title">Close Cashier Report</span></div>
+    <ol>
+      <li>From the CSR Func main screen, press &ldquo;Reporting Menu&rdquo; &rarr; <b>#1 Close Cashier Report</b>. Enter #1 for morning shift and #2 for evening shift (might have to press enter a few times).</li>
+      <li>After closing the Cashier Report, go to <b>#2 Print Cashier Report</b>.</li>
+      <li>Enter 1 if closing the morning shift drawer, or 2 if closing the evening shift drawer.</li>
+      <li>Enter the total cash for the shift being closed. This should include the money counted from the drawer, the loose change (from the example above, $.35), and the $250 for the bag.</li>
+      <li>Once entered, press &ldquo;Enter&rdquo; until returned to the Reporting Menu&rsquo;s home screen.</li>
+    </ol>
+    <div class="warn-box">⚠️ The morning shift is now finished and needs to open the evening shift&rsquo;s drawer &mdash; see <a href="#cd7">Phase 7</a>.</div>
+  </div>
+
+  <div class="phase" id="cd6">
+    <div class="phase-head"><span class="phase-num">6</span><span class="phase-title">Close Day Report</span></div>
+    <ol>
+      <li>Still under &ldquo;Reporting Menu,&rdquo; press <b>#7 Close Day Report</b>. This prints a very long receipt that two numbers need to be taken from:</li>
+    </ol>
+    <div class="subblock">
+      <ol>
+        <li>First number &mdash; under <b>Department Report</b>.</li>
+        <li>Second number &mdash; under <b>Total Sales Tax</b>.</li>
+      </ol>
+    </div>
+    <div class="note">Closing <b>Drawer #1</b> stops here &mdash; don&rsquo;t continue to Phase 7.</div>
+  </div>
+
+  <div class="phase" id="cd7">
+    <div class="phase-head"><span class="phase-num">7</span><span class="phase-title">Open the Next Drawer</span></div>
+    <ol>
+      <li>To open the next drawer, press &ldquo;Return to Sales&rdquo; in the bottom right.</li>
+      <li>The screen will ask to log in &mdash; tap the screen and a new window will appear.</li>
+      <li>Type in the shift the drawer will be for:</li>
+    </ol>
+    <div class="subblock">
+      <ol>
+        <li>Evening types <b>1</b> (for Morning shift).</li>
+        <li>Morning types <b>2</b> (for Evening shift).</li>
+      </ol>
+    </div>
+    <ol start="4">
+      <li>Password is <b>123</b>.</li>
+      <li>Drawer amount is <b>$250</b> &mdash; it comes from the &ldquo;Bag&rdquo; plus the change.</li>
+    </ol>
+  </div>
+
+  <div class="phase" id="cd8">
+    <div class="phase-head"><span class="phase-num">8</span><span class="phase-title">Filling Out the Daily Sheet &mdash; Bottom Table</span></div>
+    <div class="sub" style="margin-bottom:8px;">The table at the bottom of the sheet gets filled out as follows:</div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Field</th><th>What to Enter</th></tr></thead>
+      <tbody>
+        <tr><td><b>Time</b></td><td>Time the drawer was closed (Morning 10:00&ndash;11:00, Evening 10:00).</td></tr>
+        <tr><td><b>Cashier</b></td><td>Put initials.</td></tr>
+        <tr><td><b>Drop Amount</b></td><td>Total amount of cash counted from the drawer, after paying back the $250 bag.</td></tr>
+        <tr><td><b>Change</b></td><td>The extra change (from the example above, this would be $.35).</td></tr>
+        <tr><td><b>Checks</b></td><td>If any checks were taken in, write the total amount. There&rsquo;s an approved check list by the register &mdash; if unsure, call the manager and make sure driver&rsquo;s license, date of birth, and phone number are on the check.</td></tr>
+        <tr><td><b>CC Electronic</b></td><td>Only applies to the evening shift &mdash; see <a href="#cd4">Phase 4</a>.</td></tr>
+        <tr><td><b>Charge</b></td><td>There&rsquo;s a list of charge accounts up by the register. Put date, company name, cashier initials, product purchased, and total amount in the far-right column. Also have the customer sign and print, plus a truck number if applicable.</td></tr>
+      </tbody>
+    </table></div>
+    <div class="note">Add up all the numbers to get the total for the shift.</div>
+  </div>
+
+  <div class="phase" id="cd9">
+    <div class="phase-head"><span class="phase-num">9</span><span class="phase-title">Filling Out the Daily Sheet &mdash; Top Section</span></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Field</th><th>How It&rsquo;s Calculated</th></tr></thead>
+      <tbody>
+        <tr><td><b>Total Sales</b></td><td>Adding both numbers taken from the &ldquo;Close Shift&rdquo; report (see <a href="#cd6">Phase 6</a>).</td></tr>
+        <tr><td><b>Less Paid Out</b></td><td>Any out-of-pocket purchases get listed here.</td></tr>
+        <tr><td><b>Total Cash to Account For</b></td><td>Total Sales + Beginning Change Fund &minus; Less Paid Out.</td></tr>
+        <tr><td><b>Total Cash Accounted For</b></td><td>Bank Deposit Total of Drops &mdash; add both totals from Shift 1 and Shift 2, plus Beginning Change Fund.</td></tr>
+        <tr><td><b>Cash Balance (Short/Over)</b></td><td>Total Cash Accounted For subtracted from Total Cash to Account For. This number can be positive or negative.</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="phase" id="cd10">
+    <div class="phase-head"><span class="phase-num">10</span><span class="phase-title">Finish Up</span></div>
+    <ol>
+      <li>Once the sheet has been fully filled out, tri-fold it and paperclip it with all the other reports.</li>
+    </ol>
+  </div>
+</div>
+`;
 function renderStationOperations(main){
   main.innerHTML = `
     <div class="topbar">
       <div><h1>Station Operations</h1><p>Step-by-step daily operating procedures.</p></div>
+      <div class="btnrow no-print"><button class="btn" id="printBtn">🖶 Print This View</button></div>
     </div>
     <div class="subtabs" id="stationOpsSubTabs"></div>
     <div id="stationOpsContent"></div>
@@ -84685,6 +84845,7 @@ function renderStationOperations(main){
     b.onclick = ()=>{ stationOpsTab=t.id; renderStationOperations(main); };
     tabsEl.appendChild(b);
   });
+  document.getElementById('printBtn').onclick = ()=>window.print();
   const content = document.getElementById('stationOpsContent');
   if(stationOpsTab==="stjoe"){
     content.innerHTML = STJOE_CONTENT_HTML;
@@ -84704,6 +84865,10 @@ function renderStationOperations(main){
   }
   if(stationOpsTab==="invoices"){
     content.innerHTML = INVOICES_CONTENT_HTML;
+    return;
+  }
+  if(stationOpsTab==="closingdrawer"){
+    content.innerHTML = CLOSINGDRAWER_CONTENT_HTML;
     return;
   }
 }
