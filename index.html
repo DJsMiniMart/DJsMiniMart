@@ -82100,6 +82100,7 @@ function renderSales(main){
     <div class="grid2">
       <div class="card">
         <h2>Vendor Invoices \u2014 ${m} ${y}</h2>
+        <div class="note" style="margin-top:0;">Invoices submitted in Invoice Entry load in here automatically (tagged \u201cAuto\u201d) under the month of their invoice date \u2014 you don\u2019t need to re-enter them. Use the form below only for invoices/purchases that don\u2019t go through Invoice Entry.</div>
         <div class="form-grid">
           <div><label>Company</label><input id="invCompany"></div>
           <div><label>Invoice #</label><input id="invNum"></div>
@@ -82108,7 +82109,7 @@ function renderSales(main){
           <div><button class="btn primary" id="addInvBtn">Add</button></div>
         </div>
         <div class="tablewrap" style="max-height:280px"><table>
-          <thead><tr><th>Company</th><th>Invoice #</th><th>Date</th><th>Amount</th><th></th></tr></thead>
+          <thead><tr><th>Company</th><th>Invoice #</th><th>Date</th><th>Amount</th><th></th><th></th></tr></thead>
           <tbody id="invBody"></tbody>
         </table></div>
       </div>
@@ -82162,8 +82163,12 @@ function renderSales(main){
   const invBody = document.getElementById('invBody');
   md.invoices.forEach((inv,idx)=>{
     const tr = document.createElement('tr');
+    const srcPill = inv.sourceInvoice ? `<span class="pill ok" title="Loaded automatically from Invoice Entry">Auto</span>` : `<span class="pill" title="Entered directly here">Manual</span>`;
+    const actionCell = inv.sourceInvoice
+      ? `<button class="btn small" data-goedit="${String(inv.sourceInvoice).replace(/"/g,'&quot;')}">Edit in Invoice Log</button>`
+      : `<button class="btn small" data-idx="${idx}">Remove</button>`;
     tr.innerHTML = `<td>${inv.company}</td><td>${inv.invoice||""}</td><td>${inv.date?inv.date.slice(0,10):"—"}</td><td>${fmtUSD(inv.amount)}</td>
-      <td><button class="btn small" data-idx="${idx}">Remove</button></td>`;
+      <td>${srcPill}</td><td>${actionCell}</td>`;
     invBody.appendChild(tr);
   });
   invBody.querySelectorAll('[data-idx]').forEach(b=>b.onclick=()=>{
@@ -82171,6 +82176,9 @@ function renderSales(main){
     const inv = md.invoices[idx];
     if(!confirm(`Remove the invoice from ${inv?inv.company:""} ${inv&&inv.invoice?"#"+inv.invoice:""} (${fmtUSD(inv?inv.amount:0)})? This can't be undone.`)) return;
     md.invoices.splice(idx,1); persist(); render();
+  });
+  invBody.querySelectorAll('[data-goedit]').forEach(b=>b.onclick=()=>{
+    currentRoute = "inventory"; invSubTab = "invoiceLog"; ilExpanded = b.dataset.goedit; render();
   });
   document.getElementById('addInvBtn').onclick = ()=>{
     const company = document.getElementById('invCompany').value.trim();
@@ -83141,7 +83149,7 @@ function renderReceivedLog(el){
         <div><label>Category</label><select id="rlCatFilter"><option value="ALL">All Categories</option>${catNames.map(c=>`<option value="${c}">${c}</option>`).join("")}</select></div>
       </div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Product Name</th><th>Category</th><th>Unit / Size</th><th>Unit Cost</th><th>Retail Price</th><th>Qty Received</th><th>Notes</th><th></th></tr></thead>
+        <thead><tr><th style="min-width:280px;">Product Name</th><th>Category</th><th>Unit / Size</th><th>Unit Cost</th><th>Retail Price</th><th>Qty Received</th><th>Notes</th><th></th></tr></thead>
         <tbody id="rlBody"></tbody>
       </table></div>
     </div>
@@ -83208,6 +83216,55 @@ function renderReceivedLog(el){
   document.getElementById('rlSearch').oninput = e=>{ rlSearch = e.target.value.toLowerCase(); draw(); };
   document.getElementById('rlCatFilter').onchange = e=>{ rlCat = e.target.value; draw(); };
   draw();
+}
+
+/* ---------- Invoice Entry → Sales & Margins auto-sync ----------
+   Whenever an invoice's line items change in Invoice Entry / Invoice Log,
+   push a matching "Vendor Invoice" (company/invoice#/amount/date) into the
+   correct year+month of DATA.overlooks so Sales & Margins always reflects
+   it without anyone re-typing the total by hand. Entries created this way
+   are tagged with sourceInvoice so they can be found and replaced/removed
+   again on the next edit, and so the Sales & Margins UI can tell them apart
+   from invoices someone typed in there directly. */
+function ensureOverlookYear(year){
+  if(!DATA.overlooks[year]){
+    DATA.overlooks[year] = {};
+    MONTHS.forEach(mo=>{ DATA.overlooks[year][mo] = {daily:[], invoices:[], rebates:[], prior_year_profit:null}; });
+  }
+}
+function yearMonthFromDateStr(dateStr){
+  if(!dateStr) return null;
+  const d = new Date(dateStr+"T00:00:00");
+  if(isNaN(d.getTime())) return null;
+  return {year:String(d.getFullYear()), month:MONTHS[d.getMonth()]};
+}
+function removeAutoSyncedInvoice(invoiceNum){
+  if(!invoiceNum) return;
+  Object.keys(DATA.overlooks).forEach(y=>{
+    MONTHS.forEach(mo=>{
+      const md = DATA.overlooks[y] && DATA.overlooks[y][mo];
+      if(md && md.invoices && md.invoices.length){
+        md.invoices = md.invoices.filter(inv=>inv.sourceInvoice !== invoiceNum);
+      }
+    });
+  });
+}
+function syncInvoiceEntryToSalesMargins(invoiceNum, oldInvoiceNum){
+  if(oldInvoiceNum && oldInvoiceNum !== invoiceNum) removeAutoSyncedInvoice(oldInvoiceNum);
+  if(!invoiceNum) return;
+  removeAutoSyncedInvoice(invoiceNum);
+  const lines = DATA.invoiceEntries.filter(e=>e.invoice===invoiceNum);
+  if(!lines.length) return; // nothing left on file for this invoice -- leave it removed
+  const withDist = lines.find(l=>l.distributor);
+  const distributor = withDist ? withDist.distributor : (lines[0].distributor || "");
+  const withDate = lines.find(l=>l.date);
+  const date = withDate ? withDate.date : new Date().toISOString().slice(0,10);
+  const total = +lines.reduce((s,l)=>s+num(l.total),0).toFixed(2);
+  const ym = yearMonthFromDateStr(date);
+  if(!ym) return;
+  ensureOverlookYear(ym.year);
+  const md = DATA.overlooks[ym.year][ym.month];
+  md.invoices.push({company:distributor, invoice:invoiceNum, amount:total, date, sourceInvoice:invoiceNum});
 }
 
 /* ---------- Invoice Entry (log deliveries, line by line) ---------- */
@@ -83376,8 +83433,9 @@ function renderInvoiceEntry(el){
       if(l.cost) p.cost = l.cost;
       // Discount is a one-time reduction for this delivery only -- product's normal cost is never touched by it.
     });
+    syncInvoiceEntryToSalesMargins(invoice, reopenedFrom);
     persist();
-    toast(reopenedFrom ? `Invoice ${invoice} updated \u2014 ${invoiceDraft.lines.length} line items saved` : `Invoice ${invoice} submitted \u2014 ${invoiceDraft.lines.length} line items logged`);
+    toast(reopenedFrom ? `Invoice ${invoice} updated \u2014 ${invoiceDraft.lines.length} line items saved \u2014 also synced to Sales & Margins` : `Invoice ${invoice} submitted \u2014 ${invoiceDraft.lines.length} line items logged \u2014 also synced to Sales & Margins`);
     invoiceDraft = {distributor:"", invoice:"", date:"", lines:[]};
     renderInvoiceEntry(el);
   };
@@ -83405,12 +83463,16 @@ function renderInvoiceEntry(el){
       const idx = parseInt(b.dataset.idx);
       const line = DATA.invoiceEntries[idx];
       if(!confirm(`Permanently remove this delivery log line for ${line?line.name:""} (${fmtUSD(line?line.total:0)})? This can't be undone. If you just want it to stop counting toward Received Qty, use "Mark Reconciled" in Invoice Log instead \u2014 it keeps the record.`)) return;
-      DATA.invoiceEntries.splice(idx,1); persist(); draw();
+      const invNum = line ? line.invoice : null;
+      DATA.invoiceEntries.splice(idx,1);
+      syncInvoiceEntryToSalesMargins(invNum);
+      persist(); draw();
     });
     body.querySelectorAll('[data-total-idx]').forEach(inp=>{
       inp.onchange = ()=>{
         const idx = parseInt(inp.dataset.totalIdx);
         DATA.invoiceEntries[idx].total = parseFloat(inp.value)||0;
+        syncInvoiceEntryToSalesMargins(DATA.invoiceEntries[idx].invoice);
         persist(); draw();
       };
     });
@@ -83541,6 +83603,7 @@ function renderInvoiceLog(el){
       if(!confirm(msg)) return;
       DATA.invoiceEntries = DATA.invoiceEntries.filter(e=>e.invoice!==invoiceNum);
       if(ilExpanded===invoiceNum) ilExpanded = null;
+      syncInvoiceEntryToSalesMargins(invoiceNum);
       persist();
       toast(`Invoice ${invoiceNum} deleted`);
       renderInvoiceLog(el);
@@ -83571,6 +83634,7 @@ function renderInvoiceLog(el){
     const oldInvoice = ilExpanded;
     const val = distInp.value.trim();
     DATA.invoiceEntries.forEach(e=>{ if(e.invoice===oldInvoice) e.distributor = val; });
+    syncInvoiceEntryToSalesMargins(oldInvoice);
     persist(); toast("Company updated"); renderInvoiceLog(el);
   };
   if(invInp) invInp.onchange = ()=>{
@@ -83579,12 +83643,14 @@ function renderInvoiceLog(el){
     if(!val){ toast("Invoice # can't be blank", true); renderInvoiceLog(el); return; }
     DATA.invoiceEntries.forEach(e=>{ if(e.invoice===oldInvoice) e.invoice = val; });
     ilExpanded = val;
+    syncInvoiceEntryToSalesMargins(val, oldInvoice);
     persist(); toast("Invoice # updated"); renderInvoiceLog(el);
   };
   if(dateInp) dateInp.onchange = ()=>{
     const oldInvoice = ilExpanded;
     const val = dateInp.value || null;
     DATA.invoiceEntries.forEach(e=>{ if(e.invoice===oldInvoice) e.date = val; });
+    syncInvoiceEntryToSalesMargins(oldInvoice);
     persist(); toast("Date updated"); renderInvoiceLog(el);
   };
 
@@ -83602,6 +83668,7 @@ function renderInvoiceLog(el){
         line[field] = field==="discount" ? Math.abs(parseFloat(inp.value)||0) : (parseFloat(inp.value)||0);
         if(field==="cost" || field==="qty" || field==="discount") line.total = +(num(line.cost)*num(line.qty)-num(line.discount)).toFixed(2);
       }
+      syncInvoiceEntryToSalesMargins(line.invoice);
       persist(); renderInvoiceLog(el);
     };
   });
@@ -83622,6 +83689,7 @@ function renderInvoiceLog(el){
       const line = DATA.invoiceEntries[idx];
       if(!confirm(`Remove this line item (${line?line.name:""}, ${fmtUSD(line?line.total:0)}) from invoice ${ilExpanded}?`)) return;
       DATA.invoiceEntries.splice(idx,1);
+      syncInvoiceEntryToSalesMargins(ilExpanded);
       persist(); toast("Line item removed"); renderInvoiceLog(el);
     };
   });
@@ -83631,6 +83699,7 @@ function renderInvoiceLog(el){
     const g = groups[invoiceNum];
     DATA.invoiceEntries.unshift({name:"", category:"", unit:"", cost:0, qty:1, discount:0, total:0,
       distributor: g?g.distributor:"", invoice: invoiceNum, date: g?g.date:null, notes:""});
+    syncInvoiceEntryToSalesMargins(invoiceNum);
     persist(); toast("Line item added \u2014 fill in the product details"); renderInvoiceLog(el);
   };
 }
