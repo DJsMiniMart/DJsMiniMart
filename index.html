@@ -81571,6 +81571,50 @@ const fmtUSD0 = n => (n<0?"-$":"$") + Math.abs(n||0).toLocaleString(undefined,{m
 const fmtPct = n => ((n||0)*100).toFixed(1) + "%";
 const num = v => (typeof v === "number" && !isNaN(v)) ? v : 0;
 
+/* ===================== GENERIC "EMAIL THIS VIEW" HELPERS =====================
+   Used by every plain "Email This View" button (Inventory sub-tabs, Station Operations).
+   Monthly Reports has its own emailMonthlyReports() since it builds the text straight
+   from report data instead of reading the live screen. */
+function viewToPlainText(){
+  const main = document.getElementById('main');
+  if(!main) return "";
+  const clone = main.cloneNode(true);
+  const liveFields = Array.from(main.querySelectorAll('input, select, textarea'));
+  const cloneFields = Array.from(clone.querySelectorAll('input, select, textarea'));
+  liveFields.forEach((liveEl, i)=>{
+    const cloneEl = cloneFields[i];
+    if(!cloneEl) return;
+    let text;
+    if(liveEl.tagName === 'SELECT'){
+      text = liveEl.options[liveEl.selectedIndex] ? liveEl.options[liveEl.selectedIndex].text : liveEl.value;
+    } else if(liveEl.type === 'checkbox' || liveEl.type === 'radio'){
+      text = liveEl.checked ? '\u2713' : '';
+    } else {
+      text = liveEl.value;
+    }
+    const span = document.createElement('span');
+    span.textContent = text;
+    cloneEl.replaceWith(span);
+  });
+  clone.querySelectorAll('.no-print, button, .toast').forEach(el=>el.remove());
+  clone.style.cssText = 'position:absolute;left:-99999px;top:0;';
+  document.body.appendChild(clone);
+  const text = (clone.innerText || clone.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+  clone.remove();
+  return text;
+}
+function emailCurrentView(){
+  const heading = document.querySelector('#main h1');
+  const subject = "DJ's Mini Mart \u2014 " + (heading ? heading.textContent.trim() : "Report");
+  let body = viewToPlainText();
+  const MAX_BODY = 6000;
+  if(body.length > MAX_BODY){
+    body = body.slice(0, MAX_BODY) + "\n\n...(truncated for email \u2014 use Print This View for the full copy)";
+  }
+  if(!body){ toast("Nothing here to email yet", true); return; }
+  window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
 /* ===================== COMPUTE: SALES ===================== */
 function monthTotals(year, month){
   const md = DATA.overlooks[year][month];
@@ -82973,7 +83017,7 @@ function renderInventory(main){
   main.innerHTML = `
     <div class="topbar">
       <div><h1>Inventory</h1><p>${DATA.inventory.length.toLocaleString()} products \u2014 the full inventory system, same as the Excel workbook.</p></div>
-      <div class="btnrow no-print">${showGenericPrint ? '<button class="btn" id="printBtn">\ud83d\uddb6 Print This View</button>' : ''}</div>
+      <div class="btnrow no-print">${showGenericPrint ? '<button class="btn" id="printBtn">\ud83d\uddb6 Print This View</button><button class="btn" id="emailBtn">\u2709 Email This View</button>' : ''}</div>
     </div>
     <div class="subtabs" id="invSubTabs"></div>
     <div id="invSubContent"></div>
@@ -82986,7 +83030,10 @@ function renderInventory(main){
     b.onclick = ()=>{ invSubTab=t.id; renderInventory(main); };
     tabsEl.appendChild(b);
   });
-  if(showGenericPrint) document.getElementById('printBtn').onclick = ()=>window.print();
+  if(showGenericPrint){
+    document.getElementById('printBtn').onclick = ()=>window.print();
+    document.getElementById('emailBtn').onclick = ()=>emailCurrentView();
+  }
 
   const content = document.getElementById('invSubContent');
   if(invSubTab==="summary") renderInvSummary(content);
@@ -84186,6 +84233,101 @@ function printMonthlyReports(keys, options){
   setTimeout(()=>window.print(), 50);
 }
 
+/* ---- Report file (CSV) generation, so a generated report can be attached to any email ---- */
+function csvEscape(val){
+  const s = String(val==null ? "" : val);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+function downloadTextFile(filename, content, mime){
+  const blob = new Blob([content], {type: mime || "text/plain"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+}
+function monthlyReportsFileName(keys){
+  const sorted = keys.slice().sort();
+  const label = sorted.length===1
+    ? (()=>{ const r=DATA.inventoryReports[sorted[0]]; return r ? `${r.month}_${r.year}` : "Report"; })()
+    : `${sorted.length}_Reports`;
+  return `DJs_Mini_Mart_${label}.csv`.replace(/\s+/g,"_");
+}
+/* Builds the exact same data as printMonthlyReports/emailMonthlyReports, as CSV rows. */
+function monthlyReportsToCSV(keys, options){
+  const opts = Object.assign({includeSummary:true, includeProducts:true}, options||{});
+  const sorted = keys.slice().sort();
+  const rows = [];
+  sorted.forEach(key=>{
+    const report = DATA.inventoryReports[key];
+    const cats = inventoryByCategoryCompute(report.products, p=>num(p.received_qty));
+    const catNames = Object.keys(cats).sort();
+    const totals = inventoryTotalsCompute(cats);
+    const low = report.products.filter(p=>inventoryStatus(p.par,p.closing)==="LOW").length;
+    const out = report.products.filter(p=>inventoryStatus(p.par,p.closing)==="OUT").length;
+    const type = report.periodType || "monthly";
+    const typeLabel = type==="year-end" ? " - YEAR-END REPORT" : type==="quarterly" ? " - QUARTERLY REPORT" : "";
+    rows.push([`${report.month} ${report.year} Inventory Report${typeLabel}`]);
+    rows.push([`Generated ${report.generatedAt ? new Date(report.generatedAt).toLocaleString() : ""}`, `${report.products.length} products`]);
+    rows.push([]);
+    if(opts.includeSummary){
+      rows.push(["Inventory Value", fmtUSD(totals.closingValue), "Retail Value on Hand", fmtUSD(totals.salesValue)]);
+      rows.push(["Profit Margin", fmtPct(totals.margin), "Sell-Through", fmtPct(totals.sellThrough)]);
+      rows.push(["Low Stock Items", low, "Out of Stock Items", out]);
+      rows.push([]);
+      rows.push(["Category","#","Closing Value","Sales Value","Units","Revenue","Profit","Margin","Sell-Thru"]);
+      catNames.forEach(c=>{
+        rows.push([c, cats[c].count, fmtUSD(cats[c].closingValue), fmtUSD(cats[c].salesValue), cats[c].units, fmtUSD(cats[c].revenue), fmtUSD(cats[c].profit), fmtPct(cats[c].margin), fmtPct(cats[c].sellThrough)]);
+      });
+      rows.push(["GRAND TOTAL", report.products.length, fmtUSD(totals.closingValue), fmtUSD(totals.salesValue), totals.units, fmtUSD(totals.revenue), fmtUSD(totals.profit), fmtPct(totals.margin), fmtPct(totals.sellThrough)]);
+      rows.push([]);
+    }
+    if(opts.includeProducts){
+      rows.push(["Product","Category","Unit","Par","Opening","Total Avail.","Closing","Units Sold","Closing Value","Status"]);
+      report.products.forEach(p=>{
+        rows.push([p.name, p.category, p.unit||"", p.par, p.opening??0, num(p.opening)+num(p.received_qty), p.closing, p.sold, fmtUSD(p.closing_value), p.status||""]);
+      });
+    }
+    rows.push([]); rows.push([]);
+  });
+  return rows.map(r=>r.map(csvEscape).join(",")).join("\n");
+}
+/* Downloads the report(s) as a CSV file the person can attach to any email. */
+function downloadMonthlyReportsFile(keys, options){
+  const csv = monthlyReportsToCSV(keys, options);
+  downloadTextFile(monthlyReportsFileName(keys), csv, "text/csv");
+  toast("Report file downloaded \u2014 attach it to your email");
+}
+/* Downloads the report file AND opens the person's default email app with a short summary
+   in the body, so the workflow is one click: file lands in Downloads, draft opens ready to
+   attach it to and send. */
+function emailMonthlyReports(keys, options){
+  const opts = Object.assign({includeSummary:true, includeProducts:true}, options||{});
+  const sorted = keys.slice().sort();
+  downloadMonthlyReportsFile(sorted, opts);
+  const subjectLabel = sorted.length===1
+    ? (()=>{ const r=DATA.inventoryReports[sorted[0]]; return r ? `${r.month} ${r.year} Inventory Report` : "Inventory Report"; })()
+    : `${sorted.length} Inventory Reports`;
+  const lines = [];
+  lines.push(`The full ${subjectLabel} is attached as a CSV file \u2014 it was just downloaded to your computer (check your Downloads folder) and needs to be attached to this email before sending.`);
+  lines.push("");
+  sorted.forEach(key=>{
+    const report = DATA.inventoryReports[key];
+    if(opts.includeSummary){
+      const cats = inventoryByCategoryCompute(report.products, p=>num(p.received_qty));
+      const totals = inventoryTotalsCompute(cats);
+      lines.push(`${report.month} ${report.year}: Inventory Value ${fmtUSD(totals.closingValue)}, Profit Margin ${fmtPct(totals.margin)}, Sell-Through ${fmtPct(totals.sellThrough)}`);
+    }
+  });
+  const body = lines.join("\n");
+  const subject = `DJ's Mini Mart \u2014 ${subjectLabel}`;
+  setTimeout(()=>{
+    window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }, 250);
+}
+
 /* Lets the person choose which sections (Summary vs. full Product/Count list) to include before printing. */
 function openPrintOptionsModal(keys){
   if(!keys.length) return;
@@ -84196,8 +84338,8 @@ function openPrintOptionsModal(keys){
   backdrop.className = "modal-backdrop";
   backdrop.innerHTML = `
     <div class="modal-card">
-      <h2>Print \u2014 ${label}</h2>
-      <div class="sub">Choose what to include in the printout.</div>
+      <h2>Print / Email \u2014 ${label}</h2>
+      <div class="sub">Choose what to include, then print it or email it.</div>
       <div class="modal-check-row">
         <input type="checkbox" id="poSummary" checked>
         <label for="poSummary">Inventory Summary<span class="modal-check-sub">Totals, category breakdown, low/out-of-stock counts</span></label>
@@ -84208,7 +84350,9 @@ function openPrintOptionsModal(keys){
       </div>
       <div class="modal-actions">
         <button class="btn small" id="poCancel">Cancel</button>
-        <button class="btn small primary" id="poPrint">Print</button>
+        <button class="btn small" id="poDownload">\u2b07 Download File</button>
+        <button class="btn small" id="poEmail">\u2709 Email</button>
+        <button class="btn small primary" id="poPrint">\ud83d\uddb6 Print</button>
       </div>
     </div>
   `;
@@ -84216,12 +84360,25 @@ function openPrintOptionsModal(keys){
   const close = ()=>backdrop.remove();
   backdrop.addEventListener('click', e=>{ if(e.target===backdrop) close(); });
   document.getElementById('poCancel').onclick = close;
+  document.getElementById('poDownload').onclick = ()=>{
+    const includeSummary = document.getElementById('poSummary').checked;
+    const includeProducts = document.getElementById('poProducts').checked;
+    if(!includeSummary && !includeProducts){ toast("Pick at least one section to download", true); return; }
+    downloadMonthlyReportsFile(keys, {includeSummary, includeProducts});
+  };
   document.getElementById('poPrint').onclick = ()=>{
     const includeSummary = document.getElementById('poSummary').checked;
     const includeProducts = document.getElementById('poProducts').checked;
     if(!includeSummary && !includeProducts){ toast("Pick at least one section to print", true); return; }
     close();
     printMonthlyReports(keys, {includeSummary, includeProducts});
+  };
+  document.getElementById('poEmail').onclick = ()=>{
+    const includeSummary = document.getElementById('poSummary').checked;
+    const includeProducts = document.getElementById('poProducts').checked;
+    if(!includeSummary && !includeProducts){ toast("Pick at least one section to email", true); return; }
+    close();
+    emailMonthlyReports(keys, {includeSummary, includeProducts});
   };
 }
 function renderMonthlyReportDetail(el, key){
@@ -84916,7 +85073,7 @@ function renderStationOperations(main){
   main.innerHTML = `
     <div class="topbar">
       <div><h1>Station Operations</h1><p>Step-by-step daily operating procedures.</p></div>
-      <div class="btnrow no-print"><button class="btn" id="printBtn">🖶 Print This View</button></div>
+      <div class="btnrow no-print"><button class="btn" id="printBtn">🖶 Print This View</button><button class="btn" id="emailBtn">✉ Email This View</button></div>
     </div>
     <div class="subtabs" id="stationOpsSubTabs"></div>
     <div id="stationOpsContent"></div>
@@ -84930,6 +85087,7 @@ function renderStationOperations(main){
     tabsEl.appendChild(b);
   });
   document.getElementById('printBtn').onclick = ()=>window.print();
+  document.getElementById('emailBtn').onclick = ()=>emailCurrentView();
   const content = document.getElementById('stationOpsContent');
   if(stationOpsTab==="stjoe"){
     content.innerHTML = STJOE_CONTENT_HTML;
