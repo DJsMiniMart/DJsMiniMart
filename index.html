@@ -83878,9 +83878,10 @@ function renderInventoryCount(el){
   const catNames = [...new Set(DATA.inventory.map(p=>p.category))].sort();
   el.innerHTML = `
     <div class="note">Enter Opening Count and Closing Count. Received pulls live from Invoice Entry. Units Sold = Opening + Received \u2212 Closing. Press Enter in a Closing field to jump to the next product.</div>
-    <div class="form-grid" style="grid-template-columns:2fr 1fr auto;">
+    <div class="form-grid" style="grid-template-columns:2fr 1fr auto auto;">
       <div><label>Search product</label><input id="icSearch"></div>
       <div><label>Category</label><select id="icCat"><option value="ALL">All Categories</option>${catNames.map(c=>`<option value="${c}">${c}</option>`).join("")}</select></div>
+      <div><label>&nbsp;</label><button class="btn danger" id="icClearClosingBtn" title="Blank out the Closing field for every product shown \u2014 use this before starting a fresh count">\u2716 Clear Closing (all shown)</button></div>
       <div><label>&nbsp;</label><button class="btn" id="icRollAllBtn" title="Copy every Closing Count shown below into Opening \u2014 use this to start a new count period">\u21bb Roll Closing \u2192 Opening (all shown)</button></div>
     </div>
     <div class="card">
@@ -83893,6 +83894,20 @@ function renderInventoryCount(el){
   let icSearch="", icCat="ALL";
   document.getElementById('icSearch').oninput = e=>{ icSearch=e.target.value.toLowerCase(); draw(); };
   document.getElementById('icCat').onchange = e=>{ icCat=e.target.value; draw(); };
+  document.getElementById('icClearClosingBtn').onclick = ()=>{
+    const list = currentList();
+    if(!list.length) return;
+    if(!confirm(`Clear the Closing Count for all ${list.length} product(s) currently shown? This can't be undone automatically.`)) return;
+    list.forEach(p=>{
+      p.closing = "";
+      p.sold = productTotalAvailable(p) - num(p.closing);
+      p.closing_value = 0;
+      p.sales_value = 0;
+      p.status = inventoryStatus(p.par, p.closing);
+    });
+    persist(); draw();
+    toast(`Cleared Closing Count for ${list.length} product(s)`);
+  };
   document.getElementById('icRollAllBtn').onclick = ()=>{
     const list = currentList();
     if(!list.length) return;
