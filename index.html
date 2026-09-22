@@ -83213,19 +83213,35 @@ function initDistReportStateDefaults(reportKeys){
     if(!distReportState.toKey) distReportState.toKey = "live";
   }
 }
+/* The date a report's period actually ENDS on -- the last day of its labeled month/year -- as
+   opposed to generatedAt, which is just whenever the Generate Report button happened to get
+   clicked. Those two are only the same if you generate a report the instant a count finishes;
+   generate July/August/September back-to-back in one sitting (normal, especially catching up on
+   record-keeping) and every report's generatedAt collapses to nearly the same moment, which broke
+   period-window matching entirely. The label (month + year) is what the person actually meant the
+   report to represent, so that's the trustworthy anchor -- generatedAt is kept only as an FYI in
+   the label text. */
+function inventoryReportAsOfDate(key){
+  const r = DATA.inventoryReports[key];
+  if(!r) return "";
+  const mIdx = MONTHS.indexOf(r.month);
+  const y = parseInt(r.year);
+  if(mIdx<0 || !y) return (r.generatedAt||"").slice(0,10); // fallback if month/year are missing somehow
+  const lastDay = new Date(y, mIdx+1, 0); // day 0 of next month = last day of this month
+  return lastDay.getFullYear() + "-" + String(lastDay.getMonth()+1).padStart(2,'0') + "-" + String(lastDay.getDate()).padStart(2,'0');
+}
 function inventoryReportKeysSorted(){
-  return Object.keys(DATA.inventoryReports).sort((a,b)=>{
-    const ra = DATA.inventoryReports[a], rb = DATA.inventoryReports[b];
-    return (ra.generatedAt||"").localeCompare(rb.generatedAt||"");
-  });
+  return Object.keys(DATA.inventoryReports).sort((a,b)=> inventoryReportAsOfDate(a).localeCompare(inventoryReportAsOfDate(b)));
 }
 function inventoryReportLabel(key){
   const r = DATA.inventoryReports[key];
   if(!r) return key;
   const type = r.periodType || "monthly";
   const typeTag = type==="year-end" ? " (Year-End)" : type==="quarterly" ? " (Quarterly)" : "";
-  const dt = r.generatedAt ? new Date(r.generatedAt).toLocaleDateString() : "";
-  return `${r.month} ${r.year}${typeTag} \u2014 counted ${dt}`;
+  const asOf = inventoryReportAsOfDate(key);
+  const asOfLabel = asOf ? new Date(asOf+"T00:00:00").toLocaleDateString() : "";
+  const genDt = r.generatedAt ? new Date(r.generatedAt).toLocaleDateString() : "";
+  return `${r.month} ${r.year}${typeTag}${asOfLabel ? ` \u2014 as of ${asOfLabel}` : ""}${genDt && genDt!==asOfLabel ? ` (generated ${genDt})` : ""}`;
 }
 function snapshotProductKey(p){ return p.name+"\u0001"+(p.category||"")+"\u0001"+(p.unit||""); }
 function snapshotProductMap(products){
@@ -83240,8 +83256,8 @@ function periodBounds(fromKey, toKey){
   const fromReport = fromKey && DATA.inventoryReports[fromKey] ? DATA.inventoryReports[fromKey] : null;
   const toIsLive = !toKey || toKey==="live";
   const toReport = !toIsLive && DATA.inventoryReports[toKey] ? DATA.inventoryReports[toKey] : null;
-  const fromDate = fromReport ? (fromReport.generatedAt||"").slice(0,10) : "";
-  const toDate = toReport ? (toReport.generatedAt||"").slice(0,10) : new Date().toISOString().slice(0,10);
+  const fromDate = fromReport ? inventoryReportAsOfDate(fromKey) : "";
+  const toDate = toReport ? inventoryReportAsOfDate(toKey) : new Date().toISOString().slice(0,10);
   return {
     fromDate, toDate,
     fromProducts: fromReport ? fromReport.products : null,
