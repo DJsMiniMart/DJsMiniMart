@@ -83198,16 +83198,19 @@ function renderDistributorVariance(el){
    functions power both entry points, and this is the pattern any future report type should follow: a
    pure "analysis" function, a "generate & save" function that freezes the analysis into DATA, and a
    shared results renderer used by the live view, the saved-report detail view, and printing. */
-let distReportState = {fromKey:"", toKey:"live", distributorFilter:"ALL", threshold:40, expanded:null, inited:false};
+let distReportState = {fromKey:"", toKey:"live", distributorFilter:"ALL", threshold:40, expanded:null};
+/* Picks a sensible starting/ending count automatically -- but only fills in fromKey while it's
+   still blank, so it re-defaults the first time saved counts become available (e.g. you opened this
+   tab before generating July/August/September, then came back after generating them) without ever
+   clobbering a count you already picked yourself. */
 function initDistReportStateDefaults(reportKeys){
-  if(distReportState.inited) return;
-  distReportState.inited = true;
+  if(distReportState.fromKey) return;
   if(reportKeys.length>=2){
     distReportState.fromKey = reportKeys[reportKeys.length-2];
     distReportState.toKey = reportKeys[reportKeys.length-1];
   } else if(reportKeys.length===1){
     distReportState.fromKey = reportKeys[0];
-    distReportState.toKey = "live";
+    if(!distReportState.toKey) distReportState.toKey = "live";
   }
 }
 function inventoryReportKeysSorted(){
@@ -83275,7 +83278,8 @@ function computePricingFlags(products){
   byNameUnit.forEach(group=>{
     if(group.length<2) return;
     const prices = group.map(p=>num(p.retail));
-    const maxP = Math.max(...prices), minP = Math.min(...prices);
+    let maxP = prices[0], minP = prices[0];
+    prices.forEach(p=>{ if(p>maxP) maxP=p; if(p<minP) minP=p; }); // manual loop -- avoids a stack overflow via spread on a large group
     if(maxP - minP > 0.01){
       group.forEach(p=>{
         addDetail(p, `Priced at ${fmtUSD(p.retail)}, but ${group.length-1} other listing(s) of "${p.name}"${p.unit?` (${p.unit})`:""} range ${fmtUSD(minP)}\u2013${fmtUSD(maxP)}.`);
