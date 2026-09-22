@@ -81352,7 +81352,8 @@
   }
  ],
  "generated": "2026-08-06",
- "inventoryReports": {}
+ "inventoryReports": {},
+ "distributorReports": {}
 }</script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
@@ -83092,6 +83093,12 @@ function renderDistributorVariance(el){
   const flaggedCount = rows.filter(r=>r.flagged).length;
   const totalInvoiced = rows.reduce((s,r)=>s+r.invoiced,0);
   const totalSold = rows.reduce((s,r)=>s+r.sold,0);
+
+  const reportKeys = inventoryReportKeysSorted();
+  initDistReportStateDefaults(reportKeys);
+  const distNames = distributorNamesKnown();
+  const analysis = distributorPeriodAnalysis(distReportState.distributorFilter, distReportState.fromKey, distReportState.toKey, num(distReportState.threshold));
+
   el.innerHTML = `
     <div class="note">Compares your <b>pending</b> (not-yet-reconciled) invoices against what Inventory Count shows sold since your last roll, grouped by distributor. A distributor is flagged when invoiced $ exceeds sold $ by more than the threshold below \u2014 that's a signal to cut back the next order. This will look skewed right after you roll a count, since Sold $ starts back near $0 until your next count \u2014 it becomes meaningful again once you've counted at the end of the current period.</div>
     <div class="note" style="margin-top:-6px;">Reconciled invoices are excluded automatically. Use the date filters below only if you want to look at a specific window instead of the current pending period.</div>
@@ -83113,7 +83120,7 @@ function renderDistributorVariance(el){
       <div class="kpi"><div class="lbl">Distributors Flagged</div><div class="val" style="color:${flaggedCount?'var(--red)':'inherit'}">${flaggedCount}</div><div class="sub">of ${rows.length} distributors</div></div>
     </div>
     <div class="card">
-      <h2>By Distributor</h2>
+      <h2>By Distributor \u2014 Live / Pending</h2>
       <div class="tablewrap"><table>
         <thead><tr><th>Distributor</th><th>Invoiced $</th><th>Sold $</th><th>Gap $</th><th>Gap %</th><th># Products</th><th>Status</th></tr></thead>
         <tbody id="dvBody">${rows.length ? rows.map(r=>`<tr>
@@ -83128,6 +83135,33 @@ function renderDistributorVariance(el){
         </tbody>
       </table></div>
     </div>
+
+    <div class="card">
+      <h2>\ud83d\udcca Period Comparison \u2014 Movement &amp; Invoice Justification</h2>
+      <div class="sub">Compare two completed counts (e.g. your July count \u2192 your end-of-September count) to see which products actually moved for each distributor during that window, and whether what you paid them is backed up by what the counts show actually sold.</div>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;">
+        <div><label>From (starting count)</label><select id="drFrom">
+          <option value="">\u2014 pick a saved count \u2014</option>
+          ${reportKeys.map(k=>`<option value="${k}" ${distReportState.fromKey===k?"selected":""}>${inventoryReportLabel(k)}</option>`).join("")}
+        </select></div>
+        <div><label>To (ending count)</label><select id="drTo">
+          <option value="live" ${distReportState.toKey==="live"?"selected":""}>Live \u2014 Current Counts (today)</option>
+          ${reportKeys.map(k=>`<option value="${k}" ${distReportState.toKey===k?"selected":""}>${inventoryReportLabel(k)}</option>`).join("")}
+        </select></div>
+        <div><label>Distributor</label><select id="drDist">
+          <option value="ALL" ${distReportState.distributorFilter==="ALL"?"selected":""}>All Distributors</option>
+          ${distNames.map(n=>`<option value="${n.replace(/"/g,'&quot;')}" ${distReportState.distributorFilter===n?"selected":""}>${n}</option>`).join("")}
+        </select></div>
+        <div><label>Flag threshold (invoiced $ exceeds cost of units sold by...)</label>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <input id="drThreshold" type="range" min="0" max="200" step="5" value="${num(distReportState.threshold)}" style="flex:1;">
+            <span id="drThresholdVal" style="font-weight:700;min-width:44px;">${num(distReportState.threshold)}%</span>
+          </div>
+        </div>
+      </div>
+      ${reportKeys.length===0 ? `<div class="note" style="margin-top:10px;">No saved counts yet \u2014 go to Inventory \u2192 Monthly Reports and generate one after each inventory count (one for July, one at the end of September) so this section has something to compare.</div>` : ``}
+    </div>
+    ${analysis.error ? `<div class="note" style="margin-top:-6px;">${analysis.error}</div>` : renderDistPeriodResults(analysis)}
   `;
   const thumb = document.getElementById('dvThreshold');
   const thumbVal = document.getElementById('dvThresholdVal');
@@ -83135,6 +83169,340 @@ function renderDistributorVariance(el){
   thumb.onchange = ()=>{ distVarState.threshold = parseFloat(thumb.value)||0; renderDistributorVariance(el); };
   document.getElementById('dvFrom').onchange = e=>{ distVarState.dateFrom = e.target.value; renderDistributorVariance(el); };
   document.getElementById('dvTo').onchange = e=>{ distVarState.dateTo = e.target.value; renderDistributorVariance(el); };
+
+  document.getElementById('drFrom').onchange = e=>{ distReportState.fromKey = e.target.value; renderDistributorVariance(el); };
+  document.getElementById('drTo').onchange = e=>{ distReportState.toKey = e.target.value; renderDistributorVariance(el); };
+  document.getElementById('drDist').onchange = e=>{ distReportState.distributorFilter = e.target.value; renderDistributorVariance(el); };
+  const drThumb = document.getElementById('drThreshold');
+  const drThumbVal = document.getElementById('drThresholdVal');
+  drThumb.oninput = ()=>{ drThumbVal.textContent = drThumb.value+"%"; };
+  drThumb.onchange = ()=>{ distReportState.threshold = parseFloat(drThumb.value)||0; renderDistributorVariance(el); };
+  el.querySelectorAll('.drExpandBtn').forEach(btn=>{
+    btn.onclick = ()=>{ distReportState.expanded = distReportState.expanded===btn.dataset.dist ? null : btn.dataset.dist; renderDistributorVariance(el); };
+  });
+  const drGenBtn = document.getElementById('drGenerateBtn');
+  if(drGenBtn) drGenBtn.onclick = ()=>{
+    const rep = generateDistributorReport(distReportState.distributorFilter, distReportState.fromKey, distReportState.toKey, num(distReportState.threshold));
+    if(rep.error){ toast(rep.error, true); return; }
+    toast(`Distributor report generated \u2014 saved under Inventory \u2192 Monthly Reports \u2192 Distributor Report`);
+    invSubTab = "monthlyReports";
+    monthlyReportsState.reportType = "distributor";
+    monthlyReportsState.selectedDistReportId = rep.id;
+    render();
+  };
+}
+
+/* ---------- Distributor Period Reports (movement + invoice justification between two counts) ----------
+   Shared by the Distributor Variance tab (generate inline) and Inventory > Monthly Reports > Distributor
+   Report (pick a report type, generate/populate from there, and browse saved reports) -- same underlying
+   functions power both entry points, and this is the pattern any future report type should follow: a
+   pure "analysis" function, a "generate & save" function that freezes the analysis into DATA, and a
+   shared results renderer used by the live view, the saved-report detail view, and printing. */
+let distReportState = {fromKey:"", toKey:"live", distributorFilter:"ALL", threshold:40, expanded:null, inited:false};
+function initDistReportStateDefaults(reportKeys){
+  if(distReportState.inited) return;
+  distReportState.inited = true;
+  if(reportKeys.length>=2){
+    distReportState.fromKey = reportKeys[reportKeys.length-2];
+    distReportState.toKey = reportKeys[reportKeys.length-1];
+  } else if(reportKeys.length===1){
+    distReportState.fromKey = reportKeys[0];
+    distReportState.toKey = "live";
+  }
+}
+function inventoryReportKeysSorted(){
+  return Object.keys(DATA.inventoryReports).sort((a,b)=>{
+    const ra = DATA.inventoryReports[a], rb = DATA.inventoryReports[b];
+    return (ra.generatedAt||"").localeCompare(rb.generatedAt||"");
+  });
+}
+function inventoryReportLabel(key){
+  const r = DATA.inventoryReports[key];
+  if(!r) return key;
+  const type = r.periodType || "monthly";
+  const typeTag = type==="year-end" ? " (Year-End)" : type==="quarterly" ? " (Quarterly)" : "";
+  const dt = r.generatedAt ? new Date(r.generatedAt).toLocaleDateString() : "";
+  return `${r.month} ${r.year}${typeTag} \u2014 counted ${dt}`;
+}
+function snapshotProductKey(p){ return p.name+"\u0001"+(p.category||"")+"\u0001"+(p.unit||""); }
+function snapshotProductMap(products){
+  const m = new Map();
+  (products||[]).forEach(p=>m.set(snapshotProductKey(p), p));
+  return m;
+}
+function distributorNamesKnown(){
+  return [...new Set(DATA.invoiceEntries.map(e=>(e.distributor||"").trim()).filter(Boolean))].sort();
+}
+function periodBounds(fromKey, toKey){
+  const fromReport = fromKey && DATA.inventoryReports[fromKey] ? DATA.inventoryReports[fromKey] : null;
+  const toIsLive = !toKey || toKey==="live";
+  const toReport = !toIsLive && DATA.inventoryReports[toKey] ? DATA.inventoryReports[toKey] : null;
+  const fromDate = fromReport ? (fromReport.generatedAt||"").slice(0,10) : "";
+  const toDate = toReport ? (toReport.generatedAt||"").slice(0,10) : new Date().toISOString().slice(0,10);
+  return {
+    fromDate, toDate,
+    fromProducts: fromReport ? fromReport.products : null,
+    toProducts: toReport ? toReport.products : DATA.inventory,
+    fromLabel: fromReport ? inventoryReportLabel(fromKey) : "",
+    toLabel: toReport ? inventoryReportLabel(toKey) : "Live \u2014 Current Counts (today)"
+  };
+}
+/* ---- Pricing consistency check: flags products whose price/margin looks out of line with peers ----
+   Two independent checks, either of which can flag a product:
+   1) "Same item, different price": another product with the same normalized name AND the same
+      size/unit has a different retail price (e.g. Pepsi 20oz at $2.79 in one listing, $2.59 in
+      another). This is the literal duplicate-listing case -- could be an intentional promo price,
+      but it's always worth a second look, so it's flagged either way.
+   2) "Margin outlier": the product's own margin is well outside the typical margin for its category
+      (needs at least 4 products in that category to make "typical" meaningful). Catches a price
+      that's simply stale or mistyped even when there's no duplicate listing to compare against. */
+function normName(s){ return (s||"").toLowerCase().replace(/\s+/g,' ').trim(); }
+function normUnit(s){ return (s||"").toLowerCase().replace(/\s+/g,' ').trim(); }
+const MARGIN_OUTLIER_THRESHOLD = 0.15; // 15 percentage points off the category's median margin
+function computePricingFlags(products){
+  const flags = new Map(); // snapshotProductKey -> {detail}
+  const addDetail = (p, text)=>{
+    const key = snapshotProductKey(p);
+    const existing = flags.get(key);
+    flags.set(key, {detail: existing ? existing.detail + " Also: " + text : text});
+  };
+  const byNameUnit = new Map();
+  products.forEach(p=>{
+    const k = normName(p.name)+"\u0001"+normUnit(p.unit);
+    if(!byNameUnit.has(k)) byNameUnit.set(k, []);
+    byNameUnit.get(k).push(p);
+  });
+  byNameUnit.forEach(group=>{
+    if(group.length<2) return;
+    const prices = group.map(p=>num(p.retail));
+    const maxP = Math.max(...prices), minP = Math.min(...prices);
+    if(maxP - minP > 0.01){
+      group.forEach(p=>{
+        addDetail(p, `Priced at ${fmtUSD(p.retail)}, but ${group.length-1} other listing(s) of "${p.name}"${p.unit?` (${p.unit})`:""} range ${fmtUSD(minP)}\u2013${fmtUSD(maxP)}.`);
+      });
+    }
+  });
+  const byCat = new Map();
+  products.forEach(p=>{
+    const retail = num(p.retail);
+    if(retail<=0) return;
+    const margin = (retail-num(p.cost))/retail;
+    const c = p.category || "Uncategorized";
+    if(!byCat.has(c)) byCat.set(c, []);
+    byCat.get(c).push({p, margin});
+  });
+  byCat.forEach(list=>{
+    if(list.length<4) return;
+    const margins = list.map(x=>x.margin).sort((a,b)=>a-b);
+    const median = margins[Math.floor(margins.length/2)];
+    list.forEach(({p,margin})=>{
+      if(Math.abs(margin-median) > MARGIN_OUTLIER_THRESHOLD){
+        addDetail(p, `Margin ${fmtPct(margin)} vs. the ${p.category} category's typical ${fmtPct(median)} (retail ${fmtUSD(p.retail)}, cost ${fmtUSD(p.cost)}).`);
+      }
+    });
+  });
+  return flags;
+}
+/* Groups a distributor's invoice line items back into whole invoices (by invoice #) and returns
+   them oldest-first, so amounts can be read as a timeline instead of one lump sum. */
+function invoiceTrend(invoices){
+  if(invoices.length<2){
+    return {label: invoices.length===1 ? "Only one invoice in this window \u2014 not enough yet to show a trend." : "No invoices in this window.", direction:"flat"};
+  }
+  const mid = Math.ceil(invoices.length/2);
+  const firstHalf = invoices.slice(0, mid);
+  const secondHalf = invoices.slice(mid);
+  const avg = arr => arr.reduce((s,x)=>s+x.total,0)/arr.length;
+  const a1 = avg(firstHalf);
+  const a2 = secondHalf.length ? avg(secondHalf) : a1;
+  const changePct = a1>0 ? ((a2-a1)/a1)*100 : (a2>0?100:0);
+  const direction = changePct>10 ? "up" : changePct<-10 ? "down" : "flat";
+  const arrow = direction==="up" ? "\u2191" : direction==="down" ? "\u2193" : "\u2192";
+  const word = direction==="up" ? "Trending up" : direction==="down" ? "Trending down" : "Holding roughly flat";
+  return {
+    label: `${arrow} ${word} \u2014 early invoices averaged ${fmtUSD(a1)}, later ones averaged ${fmtUSD(a2)} (${changePct>=0?"+":""}${changePct.toFixed(0)}%).`,
+    direction, changePct
+  };
+}
+/* For each distributor with invoice activity in the window between two counts: every invoice they
+   sent (so you can see the $ trend), full detail on what moved and what didn't (priced at cost so
+   it's comparable to invoiced $), total retail sales and profit those products generated, and any
+   products priced out of line with a peer -- see computePricingFlags() above. */
+function distributorPeriodAnalysis(distributorFilter, fromKey, toKey, threshold){
+  const pb = periodBounds(fromKey, toKey);
+  if(!pb.fromProducts) return {rows:[], fromLabel:pb.fromLabel, toLabel:pb.toLabel, error:"Pick a starting count (the beginning of the period) above to compare against \u2014 e.g. your July count."};
+  const fromMap = snapshotProductMap(pb.fromProducts);
+  const toMap = snapshotProductMap(pb.toProducts);
+  const pricingFlags = computePricingFlags(pb.toProducts);
+  const entries = DATA.invoiceEntries.filter(e=>{
+    const d = (e.date||"").slice(0,10);
+    if(!d) return false;
+    if(pb.fromDate && d < pb.fromDate) return false;
+    if(pb.toDate && d > pb.toDate) return false;
+    if(distributorFilter && distributorFilter!=="ALL" && (e.distributor||"").trim()!==distributorFilter) return false;
+    return true;
+  });
+  const byDist = {};
+  entries.forEach(e=>{
+    const d = (e.distributor||"").trim() || "(No distributor listed)";
+    if(!byDist[d]) byDist[d] = {distributor:d, invoiced:0, products:new Map(), invoices:new Map()};
+    byDist[d].invoiced += num(e.total);
+    const key = snapshotProductKey(e);
+    if(!byDist[d].products.has(key)) byDist[d].products.set(key, {name:e.name, category:e.category||"", unit:e.unit||"", received:0});
+    byDist[d].products.get(key).received += num(e.qty);
+    const invKey = e.invoice || ("(no invoice #) "+(e.date||""));
+    if(!byDist[d].invoices.has(invKey)) byDist[d].invoices.set(invKey, {invoice: e.invoice || "(no invoice #)", date: e.date||"", total:0});
+    const inv = byDist[d].invoices.get(invKey);
+    inv.total += num(e.total);
+    if(e.date && (!inv.date || e.date < inv.date)) inv.date = e.date;
+  });
+  const rows = Object.values(byDist).map(g=>{
+    const productRows = [];
+    g.products.forEach((ref, key)=>{
+      const toP = toMap.get(key);
+      if(!toP) return; // can't tell what's on hand at period end without a matching product there
+      const fromP = fromMap.get(key);
+      const fromClosing = fromP ? num(fromP.closing) : 0;
+      const toClosing = num(toP.closing);
+      const sold = fromClosing + ref.received - toClosing;
+      const cost = num(toP.cost || (fromP&&fromP.cost) || 0);
+      const retail = num(toP.retail || (fromP&&fromP.retail) || 0);
+      const margin = retail>0 ? (retail-cost)/retail : 0;
+      productRows.push({name:ref.name, category:ref.category, unit:ref.unit, received:ref.received, sold, onHand:toClosing,
+        cost, retail, margin, soldCost:sold*cost, soldRetail:sold*retail, flag: pricingFlags.get(key)||null});
+    });
+    productRows.sort((a,b)=>b.sold-a.sold);
+    const cogsSold = productRows.reduce((s,p)=>s+p.soldCost,0);
+    const revenue = productRows.reduce((s,p)=>s+p.soldRetail,0);
+    const unitsSold = productRows.reduce((s,p)=>s+p.sold,0);
+    const profit = revenue - cogsSold;
+    const marginPct = revenue>0 ? profit/revenue : 0;
+    const fastest = productRows.filter(p=>p.sold>0);
+    const notMoving = productRows.filter(p=>p.sold<=0).sort((a,b)=>a.sold-b.sold);
+    const flaggedProducts = productRows.filter(p=>p.flag);
+    const invoices = Array.from(g.invoices.values()).sort((a,b)=>(a.date||"").localeCompare(b.date||""));
+    const trend = invoiceTrend(invoices);
+    const excess = g.invoiced - cogsSold;
+    const excessPct = cogsSold>0 ? (excess/cogsSold)*100 : (g.invoiced>0 ? 100 : 0);
+    return {
+      distributor:g.distributor, invoiced:g.invoiced, cogsSold, revenue, profit, marginPct, unitsSold,
+      excess, excessPct, flagged: excessPct>threshold,
+      productCount:g.products.size, matched:productRows.length,
+      fastest, notMoving, allProducts:productRows, flaggedProducts,
+      invoices, invoiceCount: invoices.length, trend
+    };
+  }).sort((a,b)=>b.excessPct-a.excessPct);
+  return {rows, fromLabel:pb.fromLabel, toLabel:pb.toLabel};
+}
+/* Freezes the current analysis into DATA.distributorReports, same idea as generateMonthlyReport()
+   freezing an inventory snapshot -- once generated, a report stays put even if counts/invoices change later. */
+function generateDistributorReport(distributorFilter, fromKey, toKey, threshold){
+  const analysis = distributorPeriodAnalysis(distributorFilter, fromKey, toKey, threshold);
+  if(analysis.error) return {error: analysis.error};
+  const id = "dr_" + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+  DATA.distributorReports[id] = {
+    id,
+    generatedAt: new Date().toISOString(),
+    fromKey, toKey,
+    fromLabel: analysis.fromLabel, toLabel: analysis.toLabel,
+    distributorFilter: distributorFilter||"ALL",
+    threshold: num(threshold),
+    rows: analysis.rows
+  };
+  persist();
+  return DATA.distributorReports[id];
+}
+/* Shared results view -- used live (tab + Monthly Reports generator) and for a frozen saved report
+   (showGenerate:false hides the Generate button since a saved report is already frozen). */
+/* One product row for the Fastest Moving / Not Moving tables -- shared so both tables (and print/CSV)
+   stay in sync. Shows a \u26a0\ufe0f marker with the full explanation in a title tooltip when the product
+   tripped a pricing flag (see computePricingFlags). */
+function distProductRowHtml(p){
+  const flagMark = p.flag ? ` <span class="pill bad" title="${p.flag.detail.replace(/"/g,'&quot;')}">\u26a0\ufe0f Price</span>` : "";
+  return `<tr>
+    <td>${p.name}${p.unit?` <span style="color:var(--text-dim);">(${p.unit})</span>`:""}${flagMark}</td>
+    <td>${p.received}</td>
+    <td style="color:${p.sold<0?'var(--red)':'inherit'}">${p.sold}</td>
+    <td>${p.onHand}</td>
+    <td>${fmtUSD(p.soldRetail)}</td>
+    <td>${fmtUSD(p.soldCost)}</td>
+    <td>${fmtPct(p.margin)}</td>
+  </tr>`;
+}
+function renderDistPeriodResults(analysis, opts){
+  const showGenerate = !opts || opts.showGenerate!==false;
+  const rows = analysis.rows;
+  const totalInvoiced = rows.reduce((s,r)=>s+r.invoiced,0);
+  const totalCogsSold = rows.reduce((s,r)=>s+r.cogsSold,0);
+  const totalRevenue = rows.reduce((s,r)=>s+r.revenue,0);
+  const totalProfit = totalRevenue - totalCogsSold;
+  const flaggedCount = rows.filter(r=>r.flagged).length;
+  const pricingFlagCount = rows.reduce((s,r)=>s+r.flaggedProducts.length,0);
+  return `
+    <div class="kpis">
+      <div class="kpi"><div class="lbl">Window</div><div class="val" style="font-size:15px;">${analysis.fromLabel||"\u2014"} \u2192 ${analysis.toLabel}</div></div>
+      <div class="kpi"><div class="lbl">Total Invoiced (window)</div><div class="val">${fmtUSD0(totalInvoiced)}</div></div>
+      <div class="kpi"><div class="lbl">Total Sales (Retail)</div><div class="val">${fmtUSD0(totalRevenue)}</div><div class="sub">Cost of goods sold: ${fmtUSD0(totalCogsSold)}</div></div>
+      <div class="kpi"><div class="lbl">Gross Profit</div><div class="val">${fmtUSD0(totalProfit)}</div><div class="sub">${totalRevenue>0?fmtPct(totalProfit/totalRevenue):"\u2014"} margin</div></div>
+      <div class="kpi"><div class="lbl">Distributors Not Justified</div><div class="val" style="color:${flaggedCount?'var(--red)':'inherit'}">${flaggedCount}</div><div class="sub">of ${rows.length} distributors</div></div>
+      <div class="kpi"><div class="lbl">Pricing Flags</div><div class="val" style="color:${pricingFlagCount?'var(--red)':'inherit'}">${pricingFlagCount}</div><div class="sub">products priced out of line</div></div>
+    </div>
+    <div class="card">
+      <div class="flex" style="justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center;">
+        <h2 style="margin:0;">By Distributor \u2014 ${analysis.fromLabel||"?"} \u2192 ${analysis.toLabel}</h2>
+        ${showGenerate ? `<button class="btn primary no-print" id="drGenerateBtn" ${rows.length?"":"disabled"}>\ud83d\udcc4 Generate Report</button>` : ``}
+      </div>
+      <div class="note" style="margin-top:0;">Only products actually invoiced by a distributor in this window are attributed to them. Movement is valued at your cost so \u201cCost of Units Sold\u201d is a fair, apples-to-apples comparison against invoiced $ \u2014 a distributor is \u201cNot Justified\u201d when invoiced $ exceeds it by more than the threshold, meaning you paid for more than moved. \u201cTotal Sales\u201d and profit are valued at retail instead, so you can see what those products actually brought in.</div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Distributor</th><th>Invoiced $</th><th># Invoices</th><th>Invoice Trend</th><th>Total Sales (Retail)</th><th>Cost of Units Sold</th><th>Gross Profit</th><th>Margin</th><th>Excess $</th><th>Excess %</th><th>Verdict</th><th></th></tr></thead>
+        <tbody>${rows.length ? rows.map(r=>{
+          const expanded = distReportState.expanded === r.distributor;
+          const trendShort = r.trend.direction==="up" ? `\u2191 Up` : r.trend.direction==="down" ? `\u2193 Down` : `\u2192 Flat`;
+          const rowHtml = `<tr>
+            <td>${r.distributor}${r.flaggedProducts.length ? ` <span class="pill bad" title="${r.flaggedProducts.length} product(s) priced out of line \u2014 see Movers detail">\u26a0\ufe0f</span>` : ""}</td>
+            <td>${fmtUSD(r.invoiced)}</td>
+            <td>${r.invoiceCount}</td>
+            <td>${trendShort}</td>
+            <td>${fmtUSD(r.revenue)}</td>
+            <td>${fmtUSD(r.cogsSold)}</td>
+            <td>${fmtUSD(r.profit)}</td>
+            <td>${fmtPct(r.marginPct)}</td>
+            <td style="color:${r.excess>0?'var(--red)':'inherit'}">${fmtUSD(r.excess)}</td>
+            <td style="color:${r.excess>0?'var(--red)':'inherit'}">${r.excessPct.toFixed(1)}%</td>
+            <td>${r.flagged ? '<span class="pill bad">Not Justified</span>' : '<span class="pill ok">Justified</span>'}</td>
+            <td><button class="btn small drExpandBtn" data-dist="${r.distributor.replace(/"/g,'&quot;')}">${expanded?"Hide":"Detail"}</button></td>
+          </tr>`;
+          if(!expanded) return rowHtml;
+          return rowHtml + `<tr><td colspan="12" style="padding:0;">
+            <div class="card" style="margin:8px 0;background:#F8FAFD;">
+              <h3 style="margin:0 0 6px;">\ud83e\uddfe Invoices in This Window (${r.invoiceCount})</h3>
+              <div class="sub">${r.trend.label}</div>
+              ${r.invoices.length ? `<div class="tablewrap" style="max-height:220px;"><table><thead><tr><th>Invoice #</th><th>Date</th><th>Amount</th></tr></thead>
+                <tbody>${r.invoices.map(inv=>`<tr><td>${inv.invoice}</td><td>${inv.date?inv.date.slice(0,10):""}</td><td>${fmtUSD(inv.total)}</td></tr>`).join("")}</tbody></table></div>`
+                : `<div class="sub">No invoices matched.</div>`}
+
+              <h3 style="margin:14px 0 6px;">\ud83d\ude80 Fastest Moving (${r.fastest.length})</h3>
+              ${r.fastest.length ? `<div class="tablewrap"><table><thead><tr><th>Product</th><th>Received</th><th>Units Sold</th><th>On Hand</th><th>Revenue</th><th>COGS</th><th>Margin</th></tr></thead>
+                <tbody>${r.fastest.map(distProductRowHtml).join("")}</tbody></table></div>`
+                : `<div class="sub">Nothing moved in this window.</div>`}
+
+              <h3 style="margin:14px 0 6px;">\ud83d\udea9 Not Moving (${r.notMoving.length})</h3>
+              <div class="sub">Zero or negative means it sat on the shelf (or a miscount/shrink if negative).</div>
+              ${r.notMoving.length ? `<div class="tablewrap"><table><thead><tr><th>Product</th><th>Received</th><th>Units Sold</th><th>On Hand</th><th>Revenue</th><th>COGS</th><th>Margin</th></tr></thead>
+                <tbody>${r.notMoving.map(distProductRowHtml).join("")}</tbody></table></div>`
+                : `<div class="sub">Everything from this distributor moved at least one unit.</div>`}
+
+              <h3 style="margin:14px 0 6px;">\u26a0\ufe0f Pricing Flags (${r.flaggedProducts.length})</h3>
+              ${r.flaggedProducts.length ? `<div class="tablewrap"><table><thead><tr><th>Product</th><th>Category</th><th>Retail</th><th>Why it's flagged</th></tr></thead>
+                <tbody>${r.flaggedProducts.map(p=>`<tr><td>${p.name}${p.unit?` (${p.unit})`:""}</td><td>${p.category}</td><td>${fmtUSD(p.retail)}</td><td>${p.flag.detail}</td></tr>`).join("")}</tbody></table></div>`
+                : `<div class="sub">Nothing priced out of line for this distributor \u2014 could still be intentional even when it is flagged elsewhere, so use judgment.</div>`}
+            </div>
+          </td></tr>`;
+        }).join("") : `<tr><td colspan="12" style="color:var(--text-dim);text-align:center;">No invoices from any distributor fall inside this window.</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>
+  `;
 }
 
 /* ---------- Summary ---------- */
@@ -84038,12 +84406,37 @@ function renderInventoryCount(el){
 }
 
 /* ---------- Monthly Inventory Reports (month-end snapshot, editable) ---------- */
-let monthlyReportsState = { selectedKey: null, checked: {} };
+let monthlyReportsState = { selectedKey: null, checked: {}, reportType: "inventory", selectedDistReportId: null, distChecked: {} };
 function isLastDayOfMonth(d){
   const test = new Date(d.getFullYear(), d.getMonth(), d.getDate()+1);
   return test.getMonth() !== d.getMonth();
 }
+/* Report-type selector shown on the two "home" (list) screens -- Inventory Snapshot and Distributor
+   Report today. Any future report type should follow the same shape: add it to this row, give it its
+   own "home" renderer (list + generate form) and its own detail renderer, and branch on reportType
+   below exactly like Distributor Report does. */
+function renderReportTypeTabsHtml(){
+  return `<div class="subtabs no-print" style="margin-bottom:12px;">
+    <button class="${monthlyReportsState.reportType==='inventory'?'active':''}" id="mrTypeInventory">Inventory Snapshot</button>
+    <button class="${monthlyReportsState.reportType==='distributor'?'active':''}" id="mrTypeDistributor">Distributor Report</button>
+  </div>`;
+}
+function wireReportTypeTabs(){
+  const a = document.getElementById('mrTypeInventory');
+  const b = document.getElementById('mrTypeDistributor');
+  if(a) a.onclick = ()=>{ monthlyReportsState.reportType='inventory'; render(); };
+  if(b) b.onclick = ()=>{ monthlyReportsState.reportType='distributor'; render(); };
+}
 function renderMonthlyReports(el){
+  if(monthlyReportsState.reportType==="distributor"){
+    if(monthlyReportsState.selectedDistReportId && DATA.distributorReports[monthlyReportsState.selectedDistReportId]){
+      renderDistributorReportDetail(el, monthlyReportsState.selectedDistReportId);
+    } else {
+      renderDistributorReportsHome(el);
+    }
+    return;
+  }
+
   const today = new Date();
   const curYear = String(today.getFullYear());
   const curMonth = MONTHS[today.getMonth()];
@@ -84061,6 +84454,7 @@ function renderMonthlyReports(el){
   }
 
   el.innerHTML = `
+    ${renderReportTypeTabsHtml()}
     <div class="note">Generate a snapshot of the full inventory (counts, values, status) as of a specific month. Once generated, a report is frozen \u2014 you can keep entering sales, invoices, and new counts for the current period without changing it. Adjust a report's counts any time before your office reviews it.</div>
     ${isLastDayOfMonth(today) && !already ? `
     <div class="status-banner bad" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
@@ -84125,6 +84519,7 @@ function renderMonthlyReports(el){
     </div>
   `;
 
+  wireReportTypeTabs();
   const genBtnToday = document.getElementById('genTodayBtn');
   if(genBtnToday) genBtnToday.onclick = ()=>{
     if(DATA.inventoryReports[curKey] && !confirm(`A report for ${curMonth} ${curYear} already exists. Overwrite it with today's counts?`)) return;
@@ -84480,6 +84875,324 @@ function renderMonthlyReportDetail(el, key){
   document.getElementById('mrSearch').oninput = e=>{ search = e.target.value; draw(); };
   drawSummary();
   draw();
+}
+
+/* ---------- Distributor Report (home: generate + saved list) ----------
+   The "populate it from here" entry point Monthly Reports offers for Distributor Report, using the
+   exact same generate/analysis functions as the Distributor Variance tab so the two stay in sync. */
+function renderDistributorReportsHome(el){
+  const reportKeys = inventoryReportKeysSorted();
+  initDistReportStateDefaults(reportKeys);
+  const distNames = distributorNamesKnown();
+  const analysis = distributorPeriodAnalysis(distReportState.distributorFilter, distReportState.fromKey, distReportState.toKey, num(distReportState.threshold));
+  const savedIds = Object.keys(DATA.distributorReports).sort().reverse();
+  const checkedIds = savedIds.filter(id=>monthlyReportsState.distChecked[id]);
+
+  el.innerHTML = `
+    ${renderReportTypeTabsHtml()}
+    <div class="note">Compares two completed counts — the one at the start of your window and the one at the end (or Live, for a count you're still entering) — to see which products moved fastest, which didn't move at all, and whether each distributor's invoices for that window are backed up by what actually sold.</div>
+    <div class="card">
+      <h2>Generate a Distributor Report</h2>
+      <div class="sub">Freezes this analysis so it stays put even if counts or invoices change later.</div>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;">
+        <div><label>From (starting count)</label><select id="drhFrom">
+          <option value="">— pick a saved count —</option>
+          ${reportKeys.map(k=>`<option value="${k}" ${distReportState.fromKey===k?"selected":""}>${inventoryReportLabel(k)}</option>`).join("")}
+        </select></div>
+        <div><label>To (ending count)</label><select id="drhTo">
+          <option value="live" ${distReportState.toKey==="live"?"selected":""}>Live — Current Counts (today)</option>
+          ${reportKeys.map(k=>`<option value="${k}" ${distReportState.toKey===k?"selected":""}>${inventoryReportLabel(k)}</option>`).join("")}
+        </select></div>
+        <div><label>Distributor</label><select id="drhDist">
+          <option value="ALL" ${distReportState.distributorFilter==="ALL"?"selected":""}>All Distributors</option>
+          ${distNames.map(n=>`<option value="${n.replace(/"/g,'&quot;')}" ${distReportState.distributorFilter===n?"selected":""}>${n}</option>`).join("")}
+        </select></div>
+        <div><label>Flag threshold</label>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <input id="drhThreshold" type="range" min="0" max="200" step="5" value="${num(distReportState.threshold)}" style="flex:1;">
+            <span id="drhThresholdVal" style="font-weight:700;min-width:44px;">${num(distReportState.threshold)}%</span>
+          </div>
+        </div>
+      </div>
+      ${reportKeys.length===0 ? `<div class="note" style="margin-top:10px;">No saved counts yet — switch to the Inventory Snapshot tab above and generate one after each count first, then come back here to compare two of them.</div>` : ``}
+    </div>
+    ${analysis.error ? `<div class="note">${analysis.error}</div>` : renderDistPeriodResults(analysis)}
+    <div class="card">
+      <div class="flex" style="justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
+        <h2 style="margin:0;">Saved Distributor Reports (${savedIds.length})</h2>
+        <div class="btnrow no-print">
+          <button class="btn small" id="drCheckAllBtn">${checkedIds.length && checkedIds.length===savedIds.length ? "Uncheck All" : "Check All"}</button>
+          <button class="btn small primary" id="drPrintSelectedBtn" ${checkedIds.length ? "" : "disabled"}>🖶 Print Selected (${checkedIds.length})</button>
+        </div>
+      </div>
+      ${savedIds.length ? `
+      <div class="tablewrap"><table>
+        <thead><tr><th></th><th>Window</th><th>Distributor</th><th>Generated</th><th># Distributors</th><th></th></tr></thead>
+        <tbody>
+          ${savedIds.map(id=>{
+            const r = DATA.distributorReports[id];
+            const dt = r.generatedAt ? new Date(r.generatedAt).toLocaleString() : "";
+            return `<tr>
+              <td><input type="checkbox" data-drcheck="${id}" ${monthlyReportsState.distChecked[id]?"checked":""}></td>
+              <td>${r.fromLabel||"?"} → ${r.toLabel}</td>
+              <td>${r.distributorFilter==="ALL"?"All":r.distributorFilter}</td>
+              <td>${dt}</td><td>${r.rows.length}</td>
+              <td class="rowbtns">
+                <button class="btn small" data-drview="${id}">View</button>
+                <button class="btn small" data-drprint="${id}">Print</button>
+                <button class="btn small danger" data-drdel="${id}">Delete</button>
+              </td></tr>`;
+          }).join("")}
+        </tbody>
+      </table></div>` : `<div class="sub">No distributor reports generated yet.</div>`}
+    </div>
+  `;
+
+  wireReportTypeTabs();
+  document.getElementById('drhFrom').onchange = e=>{ distReportState.fromKey = e.target.value; render(); };
+  document.getElementById('drhTo').onchange = e=>{ distReportState.toKey = e.target.value; render(); };
+  document.getElementById('drhDist').onchange = e=>{ distReportState.distributorFilter = e.target.value; render(); };
+  const thumb = document.getElementById('drhThreshold');
+  const thumbVal = document.getElementById('drhThresholdVal');
+  thumb.oninput = ()=>{ thumbVal.textContent = thumb.value+"%"; };
+  thumb.onchange = ()=>{ distReportState.threshold = parseFloat(thumb.value)||0; render(); };
+  el.querySelectorAll('.drExpandBtn').forEach(btn=>{
+    btn.onclick = ()=>{ distReportState.expanded = distReportState.expanded===btn.dataset.dist ? null : btn.dataset.dist; render(); };
+  });
+  const genBtn = document.getElementById('drGenerateBtn');
+  if(genBtn) genBtn.onclick = ()=>{
+    const rep = generateDistributorReport(distReportState.distributorFilter, distReportState.fromKey, distReportState.toKey, num(distReportState.threshold));
+    if(rep.error){ toast(rep.error, true); return; }
+    toast(`Distributor report generated`);
+    monthlyReportsState.selectedDistReportId = rep.id;
+    render();
+  };
+  el.querySelectorAll('[data-drview]').forEach(b=>b.onclick=()=>{ monthlyReportsState.selectedDistReportId = b.dataset.drview; render(); });
+  el.querySelectorAll('[data-drdel]').forEach(b=>b.onclick=()=>{
+    const id = b.dataset.drdel;
+    const r = DATA.distributorReports[id];
+    if(!confirm(`Delete this distributor report (${r.fromLabel} → ${r.toLabel})? This can't be undone.`)) return;
+    delete DATA.distributorReports[id];
+    delete monthlyReportsState.distChecked[id];
+    persist(); toast("Distributor report deleted"); render();
+  });
+  el.querySelectorAll('[data-drprint]').forEach(b=>b.onclick=()=>{ openDistReportPrintOptionsModal([b.dataset.drprint]); });
+  el.querySelectorAll('[data-drcheck]').forEach(cb=>cb.onchange=()=>{ monthlyReportsState.distChecked[cb.dataset.drcheck] = cb.checked; render(); });
+  const checkAllBtn = document.getElementById('drCheckAllBtn');
+  if(checkAllBtn) checkAllBtn.onclick = ()=>{
+    const allChecked = checkedIds.length && checkedIds.length===savedIds.length;
+    savedIds.forEach(id=>{ monthlyReportsState.distChecked[id] = !allChecked; });
+    render();
+  };
+  const printSelBtn = document.getElementById('drPrintSelectedBtn');
+  if(printSelBtn && checkedIds.length) printSelBtn.onclick = ()=>{ openDistReportPrintOptionsModal(checkedIds); };
+}
+function renderDistributorReportDetail(el, id){
+  const report = DATA.distributorReports[id];
+  el.innerHTML = `
+    <div class="btnrow no-print" style="margin-bottom:10px;justify-content:space-between;display:flex;">
+      <button class="btn small" id="backToDistReports">← Back to Distributor Reports</button>
+      <button class="btn small primary" id="printThisDistReportBtn">🖶 Print This Report</button>
+    </div>
+    <div class="note">Frozen at generation time (${report.generatedAt ? new Date(report.generatedAt).toLocaleString() : ""}) — generate a new report if your counts or invoices have changed since.</div>
+    <div class="card">
+      <h2>Distributor Report — ${report.fromLabel||"?"} → ${report.toLabel}</h2>
+      <div class="sub">${report.distributorFilter==="ALL"?"All distributors":report.distributorFilter} · flag threshold ${report.threshold}%</div>
+    </div>
+    ${renderDistPeriodResults({rows: report.rows, fromLabel: report.fromLabel, toLabel: report.toLabel}, {showGenerate:false})}
+  `;
+  document.getElementById('backToDistReports').onclick = ()=>{ monthlyReportsState.selectedDistReportId = null; render(); };
+  document.getElementById('printThisDistReportBtn').onclick = ()=>{ openDistReportPrintOptionsModal([id]); };
+  el.querySelectorAll('.drExpandBtn').forEach(btn=>{
+    btn.onclick = ()=>{ distReportState.expanded = distReportState.expanded===btn.dataset.dist ? null : btn.dataset.dist; render(); };
+  });
+}
+/* Builds a clean, non-editable printable view of one or more distributor reports and prints it. */
+function printDistributorReports(ids, options){
+  const opts = Object.assign({includeMovers:true, includeInvoices:true, includeFlags:true}, options||{});
+  const main = document.getElementById('main');
+  const sorted = ids.slice().sort();
+  main.innerHTML = sorted.map((id,i)=>{
+    const report = DATA.distributorReports[id];
+    const totalInvoiced = report.rows.reduce((s,r)=>s+r.invoiced,0);
+    const totalCogs = report.rows.reduce((s,r)=>s+r.cogsSold,0);
+    const totalRevenue = report.rows.reduce((s,r)=>s+r.revenue,0);
+    return `
+      <div class="${i>0?'blank-count-page':''}">
+        <div class="printhead"><h1>📊 Distributor Report — ${report.fromLabel||"?"} → ${report.toLabel}</h1>
+          <p>Generated ${report.generatedAt ? new Date(report.generatedAt).toLocaleString() : ""} — ${report.distributorFilter==="ALL"?"All distributors":report.distributorFilter}</p></div>
+        <table style="margin-bottom:14px;">
+          <tr><td><b>Total Invoiced:</b> ${fmtUSD(totalInvoiced)}</td><td><b>Total Sales (Retail):</b> ${fmtUSD(totalRevenue)}</td></tr>
+          <tr><td><b>Cost of Units Sold:</b> ${fmtUSD(totalCogs)}</td><td><b>Gross Profit:</b> ${fmtUSD(totalRevenue-totalCogs)}</td></tr>
+          <tr><td><b>Distributors Not Justified:</b> ${report.rows.filter(r=>r.flagged).length} of ${report.rows.length}</td><td><b>Pricing Flags:</b> ${report.rows.reduce((s,r)=>s+r.flaggedProducts.length,0)}</td></tr>
+        </table>
+        <table style="margin-bottom:18px;">
+          <thead><tr><th>Distributor</th><th>Invoiced $</th><th># Inv.</th><th>Total Sales</th><th>Cost of Units Sold</th><th>Gross Profit</th><th>Excess $</th><th>Excess %</th><th>Verdict</th></tr></thead>
+          <tbody>${report.rows.map(r=>`<tr><td>${r.distributor}</td><td>${fmtUSD(r.invoiced)}</td><td>${r.invoiceCount}</td><td>${fmtUSD(r.revenue)}</td><td>${fmtUSD(r.cogsSold)}</td><td>${fmtUSD(r.profit)}</td>
+            <td>${fmtUSD(r.excess)}</td><td>${r.excessPct.toFixed(1)}%</td><td>${r.flagged?"Not Justified":"Justified"}</td></tr>`).join("")}
+          </tbody>
+        </table>
+        ${report.rows.map(r=>`
+          <div style="margin-bottom:18px;">
+            <h2 style="margin:0 0 4px;">${r.distributor}</h2>
+            ${opts.includeInvoices ? `
+            <div style="margin-bottom:4px;font-size:12px;">${r.trend.label}</div>
+            <table style="margin-bottom:10px;"><thead><tr><th colspan="3">Invoices in This Window (${r.invoiceCount})</th></tr><tr><th>Invoice #</th><th>Date</th><th>Amount</th></tr></thead>
+              <tbody>${r.invoices.length?r.invoices.map(inv=>`<tr><td>${inv.invoice}</td><td>${inv.date?inv.date.slice(0,10):""}</td><td>${fmtUSD(inv.total)}</td></tr>`).join(""):`<tr><td colspan="3">None</td></tr>`}</tbody></table>` : ``}
+            ${opts.includeMovers ? `
+            <table style="margin-bottom:6px;"><thead><tr><th colspan="7">Fastest Moving (${r.fastest.length})</th></tr><tr><th>Product</th><th>Received</th><th>Units Sold</th><th>On Hand</th><th>Revenue</th><th>COGS</th><th>Margin</th></tr></thead>
+              <tbody>${r.fastest.length?r.fastest.map(p=>`<tr><td>${p.name}${p.flag?' ⚠':''}</td><td>${p.received}</td><td>${p.sold}</td><td>${p.onHand}</td><td>${fmtUSD(p.soldRetail)}</td><td>${fmtUSD(p.soldCost)}</td><td>${fmtPct(p.margin)}</td></tr>`).join(""):`<tr><td colspan="7">None</td></tr>`}</tbody></table>
+            <table style="margin-bottom:10px;"><thead><tr><th colspan="7">Not Moving (${r.notMoving.length})</th></tr><tr><th>Product</th><th>Received</th><th>Units Sold</th><th>On Hand</th><th>Revenue</th><th>COGS</th><th>Margin</th></tr></thead>
+              <tbody>${r.notMoving.length?r.notMoving.map(p=>`<tr><td>${p.name}${p.flag?' ⚠':''}</td><td>${p.received}</td><td>${p.sold}</td><td>${p.onHand}</td><td>${fmtUSD(p.soldRetail)}</td><td>${fmtUSD(p.soldCost)}</td><td>${fmtPct(p.margin)}</td></tr>`).join(""):`<tr><td colspan="7">Everything moved</td></tr>`}</tbody></table>` : ``}
+            ${opts.includeFlags && r.flaggedProducts.length ? `
+            <table><thead><tr><th colspan="4">⚠ Pricing Flags (${r.flaggedProducts.length})</th></tr><tr><th>Product</th><th>Category</th><th>Retail</th><th>Why it's flagged</th></tr></thead>
+              <tbody>${r.flaggedProducts.map(p=>`<tr><td>${p.name}${p.unit?` (${p.unit})`:""}</td><td>${p.category}</td><td>${fmtUSD(p.retail)}</td><td>${p.flag.detail}</td></tr>`).join("")}</tbody></table>` : ``}
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }).join("");
+  const restore = ()=>{ window.removeEventListener('afterprint', restore); render(); };
+  window.addEventListener('afterprint', restore);
+  setTimeout(()=>window.print(), 50);
+}
+function distributorReportsToCSV(ids, options){
+  const opts = Object.assign({includeMovers:true, includeInvoices:true, includeFlags:true}, options||{});
+  const sorted = ids.slice().sort();
+  const rows = [];
+  sorted.forEach(id=>{
+    const report = DATA.distributorReports[id];
+    const totalInvoiced = report.rows.reduce((s,r)=>s+r.invoiced,0);
+    const totalCogs = report.rows.reduce((s,r)=>s+r.cogsSold,0);
+    const totalRevenue = report.rows.reduce((s,r)=>s+r.revenue,0);
+    rows.push([`Distributor Report - ${report.fromLabel||"?"} to ${report.toLabel}`]);
+    rows.push([`Generated ${report.generatedAt ? new Date(report.generatedAt).toLocaleString() : ""}`, report.distributorFilter==="ALL"?"All distributors":report.distributorFilter]);
+    rows.push([]);
+    rows.push(["Total Invoiced", fmtUSD(totalInvoiced), "Total Sales (Retail)", fmtUSD(totalRevenue), "Cost of Units Sold", fmtUSD(totalCogs), "Gross Profit", fmtUSD(totalRevenue-totalCogs)]);
+    rows.push([]);
+    rows.push(["Distributor","Invoiced $","# Invoices","Total Sales (Retail)","Cost of Units Sold","Gross Profit","Margin","Excess $","Excess %","Verdict"]);
+    report.rows.forEach(r=>{
+      rows.push([r.distributor, fmtUSD(r.invoiced), r.invoiceCount, fmtUSD(r.revenue), fmtUSD(r.cogsSold), fmtUSD(r.profit), fmtPct(r.marginPct), fmtUSD(r.excess), r.excessPct.toFixed(1)+"%", r.flagged?"Not Justified":"Justified"]);
+    });
+    rows.push([]);
+    report.rows.forEach(r=>{
+      rows.push([`${r.distributor}`]);
+      if(opts.includeInvoices){
+        rows.push([r.trend.label]);
+        rows.push(["Invoice #","Date","Amount"]);
+        r.invoices.forEach(inv=>rows.push([inv.invoice, inv.date?inv.date.slice(0,10):"", fmtUSD(inv.total)]));
+        rows.push([]);
+      }
+      if(opts.includeMovers){
+        rows.push([`${r.distributor} — Fastest Moving`]);
+        rows.push(["Product","Unit","Received","Units Sold","On Hand","Revenue","COGS","Margin","Pricing Flag"]);
+        r.fastest.forEach(p=>rows.push([p.name, p.unit, p.received, p.sold, p.onHand, fmtUSD(p.soldRetail), fmtUSD(p.soldCost), fmtPct(p.margin), p.flag?"Yes":""]));
+        rows.push([]);
+        rows.push([`${r.distributor} — Not Moving`]);
+        rows.push(["Product","Unit","Received","Units Sold","On Hand","Revenue","COGS","Margin","Pricing Flag"]);
+        r.notMoving.forEach(p=>rows.push([p.name, p.unit, p.received, p.sold, p.onHand, fmtUSD(p.soldRetail), fmtUSD(p.soldCost), fmtPct(p.margin), p.flag?"Yes":""]));
+        rows.push([]);
+      }
+      if(opts.includeFlags && r.flaggedProducts.length){
+        rows.push([`${r.distributor} — Pricing Flags`]);
+        rows.push(["Product","Category","Retail","Why it's flagged"]);
+        r.flaggedProducts.forEach(p=>rows.push([p.name, p.category, fmtUSD(p.retail), p.flag.detail]));
+        rows.push([]);
+      }
+    });
+    rows.push([]); rows.push([]);
+  });
+  return rows.map(r=>r.map(csvEscape).join(",")).join("\n");
+}
+function distributorReportsFileName(ids){
+  const sorted = ids.slice().sort();
+  const label = sorted.length===1
+    ? (()=>{ const r=DATA.distributorReports[sorted[0]]; return r ? `${(r.fromLabel||"Report").replace(/[^\w]+/g,"_")}_to_${(r.toLabel||"").replace(/[^\w]+/g,"_")}` : "Distributor_Report"; })()
+    : `${sorted.length}_Distributor_Reports`;
+  return `DJs_Mini_Mart_${label}.csv`.replace(/\s+/g,"_");
+}
+function downloadDistributorReportsFile(ids, options){
+  const csv = distributorReportsToCSV(ids, options);
+  downloadTextFile(distributorReportsFileName(ids), csv, "text/csv");
+  toast("Report file downloaded — attach it to your email");
+}
+function emailDistributorReports(ids, options){
+  const opts = Object.assign({includeMovers:true, includeInvoices:true, includeFlags:true}, options||{});
+  const sorted = ids.slice().sort();
+  downloadDistributorReportsFile(sorted, opts);
+  const subjectLabel = sorted.length===1
+    ? (()=>{ const r=DATA.distributorReports[sorted[0]]; return r ? `Distributor Report: ${r.fromLabel} → ${r.toLabel}` : "Distributor Report"; })()
+    : `${sorted.length} Distributor Reports`;
+  const lines = [];
+  lines.push(`The full ${subjectLabel} is attached as a CSV file — it was just downloaded to your computer (check your Downloads folder) and needs to be attached to this email before sending.`);
+  lines.push("");
+  sorted.forEach(id=>{
+    const report = DATA.distributorReports[id];
+    const totalInvoiced = report.rows.reduce((s,r)=>s+r.invoiced,0);
+    const totalCogs = report.rows.reduce((s,r)=>s+r.cogsSold,0);
+    const totalRevenue = report.rows.reduce((s,r)=>s+r.revenue,0);
+    const flagCount = report.rows.reduce((s,r)=>s+r.flaggedProducts.length,0);
+    lines.push(`${report.fromLabel} → ${report.toLabel}: Invoiced ${fmtUSD(totalInvoiced)}, Total Sales ${fmtUSD(totalRevenue)}, Gross Profit ${fmtUSD(totalRevenue-totalCogs)}, ${report.rows.filter(r=>r.flagged).length} of ${report.rows.length} distributors not justified, ${flagCount} pricing flag(s)`);
+  });
+  const body = lines.join("\n");
+  const subject = `DJ's Mini Mart — ${subjectLabel}`;
+  setTimeout(()=>{
+    window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }, 250);
+}
+function openDistReportPrintOptionsModal(ids){
+  if(!ids.length) return;
+  const label = ids.length===1
+    ? (()=>{ const r = DATA.distributorReports[ids[0]]; return r ? `${r.fromLabel} → ${r.toLabel}` : "this report"; })()
+    : `${ids.length} reports`;
+  const backdrop = document.createElement('div');
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal-card">
+      <h2>Print / Email — ${label}</h2>
+      <div class="sub">Choose what to include, then print it or email it.</div>
+      <div class="modal-check-row">
+        <input type="checkbox" id="dpoInvoices" checked>
+        <label for="dpoInvoices">Invoice Detail &amp; Trend<span class="modal-check-sub">Every invoice in the window, per distributor</span></label>
+      </div>
+      <div class="modal-check-row">
+        <input type="checkbox" id="dpoMovers" checked>
+        <label for="dpoMovers">Fastest Moving &amp; Not Moving Detail<span class="modal-check-sub">Full per-distributor product breakdown</span></label>
+      </div>
+      <div class="modal-check-row">
+        <input type="checkbox" id="dpoFlags" checked>
+        <label for="dpoFlags">Pricing Flags<span class="modal-check-sub">Products priced out of line with peers</span></label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn small" id="dpoCancel">Cancel</button>
+        <button class="btn small" id="dpoDownload">⬇ Download File</button>
+        <button class="btn small" id="dpoEmail">✉ Email</button>
+        <button class="btn small primary" id="dpoPrint">🖶 Print</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  const close = ()=>backdrop.remove();
+  backdrop.addEventListener('click', e=>{ if(e.target===backdrop) close(); });
+  const readOpts = ()=>({
+    includeInvoices: document.getElementById('dpoInvoices').checked,
+    includeMovers: document.getElementById('dpoMovers').checked,
+    includeFlags: document.getElementById('dpoFlags').checked
+  });
+  document.getElementById('dpoCancel').onclick = close;
+  document.getElementById('dpoDownload').onclick = ()=>{
+    downloadDistributorReportsFile(ids, readOpts());
+  };
+  document.getElementById('dpoPrint').onclick = ()=>{
+    const opts = readOpts();
+    close();
+    printDistributorReports(ids, opts);
+  };
+  document.getElementById('dpoEmail').onclick = ()=>{
+    const opts = readOpts();
+    close();
+    emailDistributorReports(ids, opts);
+  };
 }
 
 /* ---------- Count Sheet (Print) ---------- */
