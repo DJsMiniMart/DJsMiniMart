@@ -5485,6 +5485,8 @@ const STATION_OPS_TABS = [
   {id:"deptnumbers", label:"Vendor Numbers"},
   {id:"invoices", label:"How to Do Invoices"},
   {id:"closingdrawer", label:"Closing Drawer"},
+  {id:"payroll", label:"How to Do Payroll"},
+  {id:"as400", label:"AS400 System"},
 ];
 const DOCUMENTS = [
   { title:"Chew Order Sheet", desc:"St. Joe scan book — chew, dip, and snuff barcodes for ordering.", file:"chew-order-sheet.pdf" },
@@ -5959,6 +5961,244 @@ const CLOSINGDRAWER_CONTENT_HTML = `
   </div>
 </div>
 `;
+const PAYROLL_CONTENT_HTML = `
+<div class="status-banner bad" style="display:inline-block;">📅 Payroll is closed every <b>Friday morning</b> by the opening Cashier.</div>
+<div class="card">
+  <h2>How to Do Payroll <span class="pill ok">Final</span></h2>
+  <div class="sub">Closing payroll at the register, pulling the payroll report on the back computer, and emailing it in &mdash; 5 phases, start to finish.</div>
+
+  <div class="jumplist">
+    <a href="#pr1">1. Close Payroll at the Register</a>
+    <a href="#pr2">2. Log In to Site Report Navigator</a>
+    <a href="#pr3">3. Select the Payroll Report</a>
+    <a href="#pr4">4. Process &amp; Copy the Report</a>
+    <a href="#pr5">5. Email the Report</a>
+  </div>
+
+  <div class="phase" id="pr1">
+    <div class="phase-head"><span class="phase-num">1</span><span class="phase-title">Close Payroll at the Register</span></div>
+    <ol>
+      <li>CSR Func &rarr; <b>Reporting Menu</b>.</li>
+      <li>Press <b>#16 Payroll Reports</b>.</li>
+      <li>Press <b>Close</b>.</li>
+      <li>Enter your <b>Employee Number</b>.</li>
+    </ol>
+    <div class="note">Once payroll has been closed at the register, go to the back computer.</div>
+  </div>
+
+  <div class="phase" id="pr2">
+    <div class="phase-head"><span class="phase-num">2</span><span class="phase-title">Log In to Site Report Navigator</span></div>
+    <ol>
+      <li>Open <b>Site Report Navigator</b> &mdash; it is located in the top right corner of the back computer&rsquo;s screen.</li>
+      <li>Log in with the following:</li>
+    </ol>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Field</th><th>What to Enter</th></tr></thead>
+      <tbody>
+        <tr><td><b>IP Address</b></td><td>192.168.31.11</td></tr>
+        <tr><td><b>Login</b></td><td>manager</td></tr>
+        <tr><td><b>Password</b></td><td>Same password as Commander.</td></tr>
+      </tbody>
+    </table></div>
+    <div class="warn-box">⚠️ The password needs to be reset every <b>90 days</b>.</div>
+  </div>
+
+  <div class="phase" id="pr3">
+    <div class="phase-head"><span class="phase-num">3</span><span class="phase-title">Select the Payroll Report</span></div>
+    <ol>
+      <li>At the top left, click <b>Reports</b> &rarr; <b>View Reports</b>.</li>
+      <li>A box will open &mdash; fill out the drop-down menus:</li>
+    </ol>
+    <div class="subblock">
+      <ol>
+        <li><b>Period Type:</b> Payroll Type 2</li>
+        <li><b>Period:</b> The most recently closed payroll report will be the <b>second</b> one listed. Confirm by the date payroll was closed.</li>
+      </ol>
+    </div>
+    <ol start="3">
+      <li>In the box below the drop-down menus, select the word <b>&ldquo;Payroll.&rdquo;</b></li>
+      <li>Once the week is selected, hit <b>Add</b> at the bottom of the screen.</li>
+    </ol>
+  </div>
+
+  <div class="phase" id="pr4">
+    <div class="phase-head"><span class="phase-num">4</span><span class="phase-title">Process &amp; Copy the Report</span></div>
+    <ol>
+      <li>Click the <b>Process</b> button underneath the box. This will open an Edge browser window.</li>
+    </ol>
+    <div class="warn-box">⚠️ An error message can appear at times. If this happens, select the report that is in the right box, or close the box and start again from <a href="#pr3">Phase 3</a>.</div>
+    <ol start="2">
+      <li>Click on the new Edge browser window.</li>
+      <li>Press <b>Ctrl+A</b> to select all.</li>
+      <li>Press <b>Ctrl+C</b> to copy all.</li>
+    </ol>
+  </div>
+
+  <div class="phase" id="pr5">
+    <div class="phase-head"><span class="phase-num">5</span><span class="phase-title">Email the Report</span></div>
+    <ol>
+      <li>Compose a new email from <b>heiloildjs2@gmail.com</b>.</li>
+      <li>Press <b>Ctrl+V</b> to paste the payroll report into the email.</li>
+      <li>Fix any mistakes.</li>
+      <li>Email the report to <b>jennifer@donheiloilco.com</b>.</li>
+    </ol>
+  </div>
+</div>
+`;
+/* ---- AS400 System: add future AS400 guides as new cards inside AS400_CONTENT_HTML ---- */
+const AS400_CONTENT_HTML = `
+<div class="status-banner bad" style="display:inline-block;">🖥️ The white box needs to turn <b>green</b> before you can move on to the next screen.</div>
+<div class="card">
+  <h2>AS400 System &mdash; Getting Started <span class="pill ok">Final</span></h2>
+  <div class="sub">How to log in, plus rules that apply to every AS400 screen.</div>
+
+  <div class="jumplist">
+    <a href="#as-price">Managing &amp; Changing Product Pricing</a>
+  </div>
+
+  <div class="phase">
+    <div class="phase-head"><span class="phase-num">&#10003;</span><span class="phase-title">Logging In</span></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Field</th><th>What to Enter</th></tr></thead>
+      <tbody>
+        <tr><td><b>Desktop Icon</b></td><td>DJII</td></tr>
+        <tr><td><b>Login</b></td><td>DJII</td></tr>
+        <tr><td><b>Password</b></td><td>DJII</td></tr>
+      </tbody>
+    </table></div>
+    <div class="warn-box">⚠️ Do <b>not</b> use decimal points when entering prices &mdash; type <b>199</b> for <b>$1.99</b>.</div>
+  </div>
+</div>
+
+<div class="card" id="as-price">
+  <h2>Managing &amp; Changing Product Pricing <span class="pill ok">Final</span></h2>
+  <div class="sub">Looking up or adding a product, changing its price, and sending the changes to the register &mdash; 8 phases, start to finish.</div>
+
+  <div class="jumplist">
+    <a href="#asp1">1. Open PLU File Maintenance</a>
+    <a href="#asp2">2. Product Details (Screen 1)</a>
+    <a href="#asp3">3. Price &amp; Quantity (Screen 2)</a>
+    <a href="#asp4">4. Create File From PLU Maint.</a>
+    <a href="#asp5">5. Create PLU File</a>
+    <a href="#asp6">6. Download the Files</a>
+    <a href="#asp7">7. Import in SMS Import Export</a>
+    <a href="#asp8">8. Log Off &amp; On at the Register</a>
+  </div>
+
+  <div class="phase" id="asp1">
+    <div class="phase-head"><span class="phase-num">1</span><span class="phase-title">Open PLU File Maintenance</span></div>
+    <ol>
+      <li>Select <b>13: PLU File Maintenance</b> (maintaining product pricing).</li>
+      <li>Select <b>1: Maintain PLU File</b>.</li>
+      <li>Find the product using one of the following:</li>
+    </ol>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Search By</th><th>Use It To</th></tr></thead>
+      <tbody>
+        <tr><td><b>PLU Number</b></td><td>Look up an existing product or add a new product using the barcode.</td></tr>
+        <tr><td><b>Description</b></td><td>Look up a product by name.</td></tr>
+        <tr><td><b>Product Type</b></td><td>Look up a product by type (reference the Product Type &amp; Department List).</td></tr>
+      </tbody>
+    </table></div>
+    <div class="note">Adding a new product? Type in the product&rsquo;s UPC code, press <b>F1</b>, then fill out the PLU Master Maintenance screen in <a href="#asp2">Phase 2</a>.</div>
+  </div>
+
+  <div class="phase" id="asp2">
+    <div class="phase-head"><span class="phase-num">2</span><span class="phase-title">PLU Master Maintenance &mdash; Product Details (Screen 1)</span></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Field</th><th>What to Enter</th></tr></thead>
+      <tbody>
+        <tr><td><b>Description</b></td><td>Product description.</td></tr>
+        <tr><td><b>Product Type</b></td><td>Reference the Product Type &amp; Department List.</td></tr>
+        <tr><td><b>Manufacturer</b></td><td>Reference the Load/Maintain Validation File.</td></tr>
+        <tr><td><b>Brand</b></td><td>Reference the Load/Maintain Validation File.</td></tr>
+        <tr><td><b>Department</b></td><td>Reference the Product Type &amp; Department List.</td></tr>
+        <tr><td><b>UOM</b> (Unit of Measurement)</td><td>Type <b>EA</b>.</td></tr>
+      </tbody>
+    </table></div>
+    <div class="note">Once all information is correct, press <b>Enter</b> to get to the second screen.</div>
+  </div>
+
+  <div class="phase" id="asp3">
+    <div class="phase-head"><span class="phase-num">3</span><span class="phase-title">Price &amp; Quantity (Screen 2)</span></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Field</th><th>What to Enter</th></tr></thead>
+      <tbody>
+        <tr><td><b>Location</b></td><td>0104</td></tr>
+        <tr><td><b>Price</b></td><td>Selling price (no decimal points &mdash; 199 = $1.99).</td></tr>
+        <tr><td><b>Cost</b></td><td>What the product costs the station.</td></tr>
+        <tr><td><b>Quantity</b></td><td>How many are on hand.</td></tr>
+      </tbody>
+    </table></div>
+    <div class="warn-box">⚠️ To delete a PLU, press <b>F16</b> (Shift + F4 = F16).</div>
+  </div>
+
+  <div class="phase" id="asp4">
+    <div class="phase-head"><span class="phase-num">4</span><span class="phase-title">Create File From PLU Maint.</span></div>
+    <div class="sub" style="margin-bottom:8px;">First step in creating the file to send to the register.</div>
+    <ol>
+      <li>Select <b>2: Create File From PLU Maint.</b></li>
+      <li>Location: type <b>0104</b> and hit <b>Enter</b>.</li>
+      <li>The next screen shows the number of price changes &mdash; hit <b>Enter</b>.</li>
+    </ol>
+  </div>
+
+  <div class="phase" id="asp5">
+    <div class="phase-head"><span class="phase-num">5</span><span class="phase-title">Create PLU File</span></div>
+    <div class="sub" style="margin-bottom:8px;">Second step in creating the file to send to the register.</div>
+    <ol>
+      <li>Select <b>16: Create PLU File</b>.</li>
+      <li>Place an <b>X</b> next to <b>104 DJ&rsquo;s II</b> and hit <b>Enter</b>.</li>
+      <li>Press <b>F8</b> to select all departments, then hit <b>Enter</b>.</li>
+    </ol>
+  </div>
+
+  <div class="phase" id="asp6">
+    <div class="phase-head"><span class="phase-num">6</span><span class="phase-title">Download the Files</span></div>
+    <ol>
+      <li>Minimize the AS400 screen.</li>
+      <li>Double-click each of these 4 desktop icons:</li>
+    </ol>
+    <div class="subblock">
+      <ol>
+        <li><b>Download PLU File</b></li>
+        <li><b>Download Match File</b></li>
+        <li><b>Download Mix File</b></li>
+        <li><b>Download Combo File</b></li>
+      </ol>
+    </div>
+    <div class="note">See &ldquo;Multi Pack &amp; 2 For Deals&rdquo; for more information on Match, Mix, and Combo Files.</div>
+  </div>
+
+  <div class="phase" id="asp7">
+    <div class="phase-head"><span class="phase-num">7</span><span class="phase-title">Import in SMS Import Export</span></div>
+    <ol>
+      <li>After the files have finished downloading, open <b>SMS Import Export</b> (located right above the download icons).</li>
+      <li>Log in with the following:</li>
+    </ol>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Field</th><th>What to Enter</th></tr></thead>
+      <tbody>
+        <tr><td><b>IP Address</b></td><td>192.168.31.11</td></tr>
+        <tr><td><b>Login</b></td><td>manager</td></tr>
+        <tr><td><b>Password</b></td><td>Same password as Commander.</td></tr>
+      </tbody>
+    </table></div>
+    <ol start="3">
+      <li>Once logged in, click <b>Import Data</b> in the top right.</li>
+      <li>A new window will open &mdash; hit <b>Select All</b>, then <b>Import</b>.</li>
+    </ol>
+  </div>
+
+  <div class="phase" id="asp8">
+    <div class="phase-head"><span class="phase-num">8</span><span class="phase-title">Log Off &amp; Back On at the Register</span></div>
+    <ol>
+      <li>After the import is finished, log off and back on at the register.</li>
+    </ol>
+    <div class="warn-box">⚠️ Changes made at the computer <b>won&rsquo;t apply</b> until you log off and back on at the register.</div>
+  </div>
+</div>
+`;
 function renderStationOperations(main){
   main.innerHTML = `
     <div class="topbar">
@@ -6001,6 +6241,14 @@ function renderStationOperations(main){
   }
   if(stationOpsTab==="closingdrawer"){
     content.innerHTML = CLOSINGDRAWER_CONTENT_HTML;
+    return;
+  }
+  if(stationOpsTab==="payroll"){
+    content.innerHTML = PAYROLL_CONTENT_HTML;
+    return;
+  }
+  if(stationOpsTab==="as400"){
+    content.innerHTML = AS400_CONTENT_HTML;
     return;
   }
 }
