@@ -126,6 +126,11 @@
     th{background:#eee !important;color:#000 !important;}
     .tablewrap{max-height:none;overflow:visible;border:none;}
     .blank-count-page{page-break-before:always;}
+    .count-cat-page{page-break-before:always;break-before:page;}
+    .count-cat-page:first-of-type{page-break-before:auto;break-before:auto;}
+    .count-cat-page .printhead{display:block;}
+    .count-cat-page thead{display:table-header-group;}
+    .count-cat-page tr{page-break-inside:avoid;break-inside:avoid;}
   }
   .blank-count-page{margin-top:24px;}
   .blank-count-page .sub{color:var(--text-dim);font-size:12px;margin-bottom:10px;}
@@ -5388,16 +5393,18 @@ function renderCountSheet(el){
         </table></div>
       </div>`;
   el.innerHTML = `
-    <div class="printhead"><h1>\u26fd Physical Inventory Count Sheet</h1><p>Date: _______________   Counted by: _______________   Verified by: _______________</p></div>
-    <div class="note no-print">Blank printable sheet for a physical count \u2014 use Print This View above. Five blank pages are included at the end for products not yet in the system.</div>
+    <div class="note no-print">Blank printable sheet for a physical count \u2014 use Print This View above. Each category prints on its own page(s) so it can be handed off separately. Five blank pages are included at the end for products not yet in the system.</div>
+    <div class="count-cat-pages">
     ${catNames.map(c=>`
-      <div class="card">
+      <div class="card count-cat-page">
+        <div class="printhead"><h1>\u26fd Physical Inventory Count Sheet \u2014 ${c}</h1><p>Date: _______________   Counted by: _______________   Verified by: _______________</p></div>
         <h2>${c}</h2>
         <div class="tablewrap" style="max-height:none"><table>
           <thead><tr><th>Product</th><th>Unit</th><th>Par</th><th style="width:120px">Count</th></tr></thead>
           <tbody>${cats[c].map(p=>`<tr><td>${p.name}</td><td>${p.unit||""}</td><td>${p.par}</td><td>&nbsp;</td></tr>`).join("")}</tbody>
         </table></div>
       </div>`).join("")}
+    </div>
     ${[1,2,3,4,5].map(blankPage).join("")}
   `;
 }
@@ -5487,6 +5494,7 @@ const STATION_OPS_TABS = [
   {id:"closingdrawer", label:"Closing Drawer"},
   {id:"payroll", label:"How to Do Payroll"},
   {id:"as400", label:"AS400 System"},
+  {id:"invprotocol", label:"Inventory Protocol"},
 ];
 const DOCUMENTS = [
   { title:"Chew Order Sheet", desc:"St. Joe scan book — chew, dip, and snuff barcodes for ordering.", file:"chew-order-sheet.pdf" },
@@ -6199,6 +6207,70 @@ const AS400_CONTENT_HTML = `
   </div>
 </div>
 `;
+const INVPROTOCOL_CONTENT_HTML = `
+<div class="status-banner bad" style="display:inline-block;">📦 Do the steps <b>in order</b> &mdash; especially Phase 4. Doing them out of order can wipe out a count.</div>
+<div class="card">
+  <h2>Inventory Protocol &mdash; Physical Count <span class="pill ok">Final</span></h2>
+  <div class="sub">How to prepare for, conduct, enter, and close out a physical inventory count &mdash; 4 phases, start to finish.</div>
+
+  <div class="jumplist">
+    <a href="#ipp1">1. Before the Count</a>
+    <a href="#ipp2">2. Conducting the Count</a>
+    <a href="#ipp3">3. Entering Counts into the Site</a>
+    <a href="#ipp4">4. Closing Out the Period</a>
+  </div>
+
+  <div class="phase" id="ipp1">
+    <div class="phase-head"><span class="phase-num">1</span><span class="phase-title">Before the Count</span></div>
+    <ol>
+      <li><b>Pick a quiet time</b> &mdash; early morning or after close. No deliveries should be put away while counting.</li>
+      <li><b>Enter every invoice received up to count day</b> in <b>Inventory &rarr; Invoices &rarr; Invoice Entry</b>. &ldquo;Received&rdquo; is pulled from unreconciled invoices, so a missing invoice makes Units Sold wrong.</li>
+      <li><b>Download a backup</b> in <b>Backup &amp; Restore &rarr; Download Backup</b>. Data lives in the browser, so always back up before big changes.</li>
+      <li><b>Print the count sheets</b> in <b>Inventory &rarr; Counts &rarr; Count Sheet (Print) &rarr; Print This View</b>. Each category prints on its own page(s) &mdash; staple each category together.</li>
+    </ol>
+  </div>
+
+  <div class="phase" id="ipp2">
+    <div class="phase-head"><span class="phase-num">2</span><span class="phase-title">Conducting the Count</span></div>
+    <ol>
+      <li><b>Assign categories</b> &mdash; one person per category. Each counter writes their name and the date on the sheet header.</li>
+      <li><b>Count in the unit shown on the sheet.</b> If it says <b>12pk</b>, count 12-packs, not cans. Note loose singles from broken packs in the margin.</li>
+      <li><b>Count everywhere</b> &mdash; shelf, cooler, backroom, and overstock. Work in a fixed pattern (left&rarr;right, top&rarr;bottom) so nothing is counted twice.</li>
+      <li><b>Write 0 for items you don&rsquo;t have.</b> Never leave a line blank &mdash; blank means &ldquo;not counted,&rdquo; not zero.</li>
+      <li><b>New items</b> go on the blank pages at the back (name, unit, count).</li>
+      <li><b>High-value items get a second count</b> &mdash; cigarettes, tobacco, and liquor should be recounted by a second person who initials &ldquo;Verified by.&rdquo;</li>
+    </ol>
+    <div class="warn-box">⚠️ Cigarettes, tobacco, and liquor are where most shrink shows up &mdash; never skip the second count.</div>
+  </div>
+
+  <div class="phase" id="ipp3">
+    <div class="phase-head"><span class="phase-num">3</span><span class="phase-title">Entering Counts into the Site</span></div>
+    <ol>
+      <li><b>Add any new products first</b> (from the blank pages) in <b>Inventory &rarr; Overview &rarr; Product List</b> so they have a row to enter into.</li>
+      <li>Go to <b>Inventory &rarr; Counts &rarr; Inventory Count</b>. Set Category to <b>All Categories</b>, leave search empty, and click <b>Clear Closing (all shown)</b> so no old numbers carry over. <i>Only do this if last period was rolled (Phase 4, step 2).</i></li>
+      <li><b>Enter one category at a time</b> &mdash; pick it from the Category dropdown, click the first <b>Closing</b> box, type the count, and press <b>Enter</b> to jump to the next product. The order matches the printed sheet.</li>
+      <li><b>Sanity-check Units Sold</b> as you go (Units Sold = Opening + Received &minus; Closing):
+        <ul>
+          <li><b>Negative</b> &rarr; usually a missing invoice or a miscount. Recheck the shelf or the invoice.</li>
+          <li><b>Way higher than normal</b> &rarr; possible shrink, theft, or a miscount. Recount it.</li>
+        </ul>
+      </li>
+      <li>Use the <b>Notes</b> column for anything odd (damaged, expired, recounted, etc.).</li>
+    </ol>
+  </div>
+
+  <div class="phase" id="ipp4">
+    <div class="phase-head"><span class="phase-num">4</span><span class="phase-title">Closing Out the Period</span></div>
+    <ol>
+      <li><b>Save a snapshot</b> &mdash; <b>Inventory &rarr; Reports &rarr; Monthly Reports &rarr; Generate Report</b> for this month. This freezes counts, values, and sales for your records.</li>
+      <li><b>Roll the count forward</b> &mdash; back in <b>Inventory Count</b>, set Category to <b>All Categories</b>, then click <b>Roll Closing &rarr; Opening (all shown)</b>. This count becomes next period&rsquo;s starting point.</li>
+      <li><b>Reconcile invoices</b> &mdash; <b>Inventory &rarr; Invoices &rarr; Invoice Log &rarr; Reconcile a Count Period</b>. Pick the count date and click <b>Mark Reconciled Through This Date</b> so those deliveries don&rsquo;t count again next time. If a delivery arrived <i>after</i> the count on the same day, reconcile through the day before and handle that invoice separately.</li>
+      <li><b>Download another backup</b> now that the count is final.</li>
+    </ol>
+    <div class="warn-box">⚠️ The <b>Clear</b> and <b>Roll</b> buttons only affect the products currently shown. Always confirm Category is <b>All Categories</b> and the search box is empty first &mdash; otherwise you&rsquo;ll only roll one category.</div>
+  </div>
+</div>
+`;
 function renderStationOperations(main){
   main.innerHTML = `
     <div class="topbar">
@@ -6249,6 +6321,10 @@ function renderStationOperations(main){
   }
   if(stationOpsTab==="as400"){
     content.innerHTML = AS400_CONTENT_HTML;
+    return;
+  }
+  if(stationOpsTab==="invprotocol"){
+    content.innerHTML = INVPROTOCOL_CONTENT_HTML;
     return;
   }
 }
