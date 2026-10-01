@@ -200,7 +200,7 @@
   <button class="mobileMenuBtn" id="mobileMenuBtn" aria-label="Menu">☰</button>
   <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
   <div class="sidebar">
-    <div class="brand">DJ's Mini Mart<small>Sales \u00b7 Inventory \u00b7 Forecasting</small></div>
+    <div class="brand">DJ's Mini Mart<small>Sales · Inventory · Forecasting</small></div>
     <div class="nav" id="nav"></div>
     <div class="sidebar-foot" id="sidebarFoot">Connecting...</div>
   </div>
@@ -252,164 +252,692 @@ function migrate(stored){
         }
       });
     });
+    // Fold stray category spellings ("Grocery", "soda ") into the existing UPPERCASE category so products
+    // added that way show up with the rest of their category in Product List / Count / Count Sheet.
+    stored.inventory.forEach(p=>{
+      const c = String(p.category||"").replace(/\s+/g,' ').trim().toUpperCase();
+      if(c && p.category!==c){ p.category = c; changed = true; }
+    });
+    // Stable id per product so two people editing different products at the same time can be merged
+    // safely by the cloud sync (num alone isn't unique if two people add a product at the same moment).
+    const seen = new Set();
+    stored.inventory.forEach(p=>{
+      if(!p.uid || seen.has(p.uid)){
+        let id = "n" + p.num, n = 1;
+        while(seen.has(id)) id = "n" + p.num + "#" + (++n);
+        p.uid = id; changed = true;
+      }
+      seen.add(p.uid);
+    });
   }
   return changed;
 }
 
+/* ===================== LOCAL STORAGE (this device) =====================
+   The whole data set (with every monthly snapshot) is several MB and keeps growing, which is more than
+   browser localStorage reliably holds (~5MB). So this device's copy now lives in IndexedDB (hundreds of
+   MB available); localStorage is only read once to pick up data saved by the previous version. */
+let LOCAL_IS_FRESH = false;
 function loadData(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw){
-      const stored = JSON.parse(raw);
-      const changed = migrate(stored);
-      if(changed) saveData(stored);
-      return stored;
-    }
+    if(raw){ const stored = JSON.parse(raw); migrate(stored); return stored; }
   }catch(e){ console.warn("localStorage read failed", e); }
   const fresh = JSON.parse(JSON.stringify(SEED));
-  saveData(fresh);
+  migrate(fresh);
+  LOCAL_IS_FRESH = true; // nothing saved on this device yet -- just take the shared copy
   return fresh;
 }
-function saveData(d){
-  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
-  catch(e){ console.warn("localStorage write failed", e); toast("Could not save — storage may be full or blocked", true); }
-}
-let DATA = loadData();
-
-function persist(){ saveData(DATA); scheduleCloudSave(); toast("Saved"); }
-
-/* ===================== CLOUD SYNC (Firestore) ===================== */
-// Firestore documents cap out at ~1MB, but our data is bigger, so we split it into
-// numbered "chunk" documents and reassemble them on load. A separate "meta" document
-// tracks how many chunks exist and who wrote them last, so every open copy of this
-// file can tell when someone else has made a change and pull the update automatically.
-const CLIENT_ID_KEY = "stationManagerClientId";
-function getClientId(){
-  try{
-    let id = localStorage.getItem(CLIENT_ID_KEY);
-    if(!id){ id = "c" + Date.now() + "_" + Math.random().toString(36).slice(2); localStorage.setItem(CLIENT_ID_KEY, id); }
-    return id;
-  }catch(e){ return "c" + Date.now() + "_" + Math.random().toString(36).slice(2); }
-}
-const CLIENT_ID = getClientId();
-const CHUNK_SIZE = 500000; // characters per Firestore document, safely under the 1MB field limit
-let syncState = { status: "connecting", rev: 0, lastChunkCount: 0 };
-
-function updateSyncBadge(){
-  const el = document.getElementById('sidebarFoot');
-  if(!el) return;
-  const labels = {
-    connecting: "Connecting...",
-    syncing: "\u21bb Syncing...",
-    synced: "\u25cf Synced \u2014 everyone sees your changes",
-    error: "\u26a0 Offline \u2014 saved to this browser only",
-    nocloud: "Local data \u00b7 saved in this browser"
-  };
-  el.textContent = labels[syncState.status] || labels.nocloud;
-}
-
-function chunkString(str, size){
-  const out = [];
-  for(let i=0; i<str.length; i+=size) out.push(str.slice(i, i+size));
-  return out.length ? out : [""];
-}
-
-async function cloudSaveNow(){
-  if(!window.db){ syncState.status = "nocloud"; updateSyncBadge(); return; }
-  try{
-    syncState.status = "syncing"; updateSyncBadge();
-    const json = JSON.stringify(DATA);
-    const chunks = chunkString(json, CHUNK_SIZE);
-    const rev = (syncState.rev||0) + 1;
-    const batch = db.batch();
-    chunks.forEach((c,i)=>{ batch.set(db.collection('stationManagerSync').doc('chunk_'+i), {data:c}); });
-    const prevCount = syncState.lastChunkCount || 0;
-    for(let i=chunks.length; i<prevCount; i++){ batch.delete(db.collection('stationManagerSync').doc('chunk_'+i)); }
-    batch.set(db.collection('stationManagerSync').doc('meta'), {
-      rev, updatedBy: CLIENT_ID, updatedAt: firebase.firestore.FieldValue.serverTimestamp(), chunkCount: chunks.length
+const IDB = (function(){
+  let dbp = null;
+  function open(){
+    if(dbp) return dbp;
+    dbp = new Promise((resolve, reject)=>{
+      try{
+        const req = indexedDB.open("djsMiniMart", 1);
+        req.onupgradeneeded = ()=>{ req.result.createObjectStore("kv"); };
+        req.onsuccess = ()=>resolve(req.result);
+        req.onerror = ()=>reject(req.error);
+      }catch(e){ reject(e); }
     });
-    await batch.commit();
-    syncState.rev = rev;
-    syncState.lastChunkCount = chunks.length;
-    syncState.status = "synced";
-    updateSyncBadge();
+    return dbp;
+  }
+  async function get(key){
+    const db = await open();
+    return new Promise((resolve, reject)=>{
+      const r = db.transaction("kv","readonly").objectStore("kv").get(key);
+      r.onsuccess = ()=>resolve(r.result); r.onerror = ()=>reject(r.error);
+    });
+  }
+  async function set(key, val){
+    const db = await open();
+    return new Promise((resolve, reject)=>{
+      const tx = db.transaction("kv","readwrite");
+      tx.objectStore("kv").put(val, key);
+      tx.oncomplete = ()=>resolve(); tx.onerror = ()=>reject(tx.error); tx.onabort = ()=>reject(tx.error);
+    });
+  }
+  return {get, set};
+})();
+let localSaveTimer = null, localSaveWarned = false;
+function saveLocalSoon(){ clearTimeout(localSaveTimer); localSaveTimer = setTimeout(saveLocalNow, 300); }
+async function saveLocalNow(){
+  clearTimeout(localSaveTimer);
+  try{
+    await IDB.set("state", {data: DATA, base: syncBase, savedAt: new Date().toISOString()});
   }catch(e){
-    console.warn("Cloud save failed", e);
-    syncState.status = "error";
-    updateSyncBadge();
+    console.warn("IndexedDB write failed, falling back to localStorage", e);
+    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(DATA)); }
+    catch(e2){ if(!localSaveWarned){ localSaveWarned = true; toast("Could not save on this device — storage may be full or blocked", true); } }
   }
 }
+function saveData(d){ saveLocalSoon(); } // kept for any older callers
+let DATA = loadData();
 
-let cloudSaveTimer = null;
-function scheduleCloudSave(){
+function persist(){ DATA_VERSION++; saveLocalSoon(); scheduleCloudSave(); toast("Saved"); }
+
+/* ===================== CLOUD SYNC (Firestore) =====================
+   HOW IT WORKS (and why it changed):
+   The old sync uploaded the ENTIRE data set as one blob on every save, and whoever saved last won. So if
+   a coworker's copy was out of date (laptop asleep, flaky wifi, an old tab left open) and they changed
+   anything at all, their old copy replaced everyone's -- including a just-finished count. And if this
+   device couldn't reach the cloud, the only sign was small text in the sidebar footer.
+
+   Now the data is split into sections ("units": the product list, each monthly snapshot, each year of
+   Sales & Margins, invoices, ...). Each device remembers the last cloud version of every section it has
+   seen (its "base"). A save only uploads sections THIS device actually changed, and if someone else
+   changed the same section in the meantime, the two versions are merged (per product / per field /
+   per invoice line) instead of one overwriting the other. Section contents are stored in documents
+   named after a hash of their content, and a small "meta" document lists the current version of every
+   section, so readers never see half-written data. When this device can't reach the cloud, a red bar
+   says so on every page, edits are kept here, and they're merged and uploaded automatically once it
+   reconnects. */
+const SYNC_COL = "stationManagerSyncV2";
+const LEGACY_COL = "stationManagerSync";
+const CHUNK_SIZE = 250000; // chars per Firestore doc -- even at 3 bytes/char this stays under the 1 MiB doc limit
+const SPLIT_KEYS = ["inventoryReports","distributorReports","officeReports","cigReconciliationReports","overlooks"];
+const CLIENT_ID = (function(){
+  try{
+    let id = sessionStorage.getItem("stationManagerTabId");
+    if(!id){ id = "c" + Date.now() + "_" + Math.random().toString(36).slice(2); sessionStorage.setItem("stationManagerTabId", id); }
+    return id;
+  }catch(e){ return "c" + Date.now() + "_" + Math.random().toString(36).slice(2); }
+})();
+let syncState = { status: "connecting", lastSyncedAt: null, error: "", legacyWriter: false, retryTimer: null, retryDelay: 15000 };
+let syncBase = { json: {}, hashes: {} }; // last cloud version of each section this device has seen
+let syncReady = false;      // true once this device has reconciled with the cloud at least once this session
+let forceNextSave = false;  // Restore/Reset: upload this device's copy as-is, no merging
+
+function hashStr(str){ // cyrb53 -- fast 53-bit string hash
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for(let i=0; i<str.length; i++){ const ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1>>>16), 2246822507) ^ Math.imul(h2 ^ (h2>>>13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2>>>16), 2246822507) ^ Math.imul(h1 ^ (h1>>>13), 3266489909);
+  return (h2>>>0).toString(36) + (h1>>>0).toString(36) + "_" + str.length.toString(36);
+}
+function unitsOf(d){
+  const u = {};
+  Object.keys(d).forEach(k=>{
+    const v = d[k];
+    if(SPLIT_KEYS.includes(k) && v && typeof v==="object" && !Array.isArray(v)){
+      u[k+"/"] = '"__map__"';
+      Object.keys(v).forEach(sub=>{ u[k+"/"+sub] = JSON.stringify(v[sub]); });
+    } else {
+      u[k] = JSON.stringify(v===undefined ? null : v);
+    }
+  });
+  return u;
+}
+function setUnit(d, name, json){
+  const slash = name.indexOf("/");
+  if(slash<0){ if(json==null) delete d[name]; else d[name] = JSON.parse(json); return; }
+  const k = name.slice(0, slash), sub = name.slice(slash+1);
+  if(sub===""){ if(json==null) delete d[k]; else if(!d[k] || typeof d[k]!=="object" || Array.isArray(d[k])) d[k] = {}; return; }
+  if(json==null){ if(d[k]) delete d[k][sub]; return; }
+  if(!d[k] || typeof d[k]!=="object" || Array.isArray(d[k])) d[k] = {};
+  d[k][sub] = JSON.parse(json);
+}
+function dataFromUnits(units){
+  const d = {};
+  Object.keys(units).filter(n=>n.endsWith("/")).forEach(n=>setUnit(d, n, units[n]));
+  Object.keys(units).filter(n=>!n.endsWith("/")).forEach(n=>setUnit(d, n, units[n]));
+  return d;
+}
+function hashesOf(units){ const h = {}; Object.keys(units).forEach(n=>h[n] = hashStr(units[n])); return h; }
+
+/* ---------- three-way merge: base (last version both sides had), mine (this device), theirs (cloud) ---------- */
+const jeq = (a,b)=> a===b || JSON.stringify(a)===JSON.stringify(b);
+const isObj = v => v && typeof v==="object" && !Array.isArray(v);
+function merge3(base, mine, theirs){
+  if(jeq(mine, theirs)) return mine;
+  if(base!==undefined && jeq(base, mine)) return theirs;
+  if(base!==undefined && jeq(base, theirs)) return mine;
+  if(isObj(mine) && isObj(theirs)){
+    const b = isObj(base) ? base : {};
+    const out = {};
+    const keys = [...new Set([...Object.keys(theirs), ...Object.keys(mine)])];
+    keys.forEach(k=>{
+      const inM = k in mine, inT = k in theirs, inB = isObj(base) && (k in b);
+      if(inM && inT) out[k] = merge3(inB ? b[k] : undefined, mine[k], theirs[k]);
+      else if(inM){ if(!(inB && jeq(b[k], mine[k]))) out[k] = mine[k]; }       // they deleted it & I didn't touch it -> stays deleted
+      else if(inT){ if(!(inB && jeq(b[k], theirs[k]))) out[k] = theirs[k]; }   // I deleted it & they didn't touch it -> stays deleted
+    });
+    return out;
+  }
+  if(Array.isArray(mine) && Array.isArray(theirs)) return mergeArray(Array.isArray(base) ? base : undefined, mine, theirs);
+  return mine; // same field changed on both sides -> the edit made on this device wins
+}
+function mergeArray(base, mine, theirs){
+  const hasUid = arr => arr.length>0 && arr.every(x=>isObj(x) && x.uid);
+  if((mine.length===0 || hasUid(mine)) && (theirs.length===0 || hasUid(theirs)) && (hasUid(mine) || hasUid(theirs))){
+    // keyed by uid (products): per-product, per-field merge; keeps additions from both sides
+    const bMap = new Map((base||[]).filter(isObj).map(x=>[x.uid, x]));
+    const mMap = new Map(mine.map(x=>[x.uid, x]));
+    const tMap = new Map(theirs.map(x=>[x.uid, x]));
+    const out = [];
+    theirs.forEach(t=>{
+      const m = mMap.get(t.uid), b = bMap.get(t.uid);
+      if(m) out.push(merge3(b, m, t));
+      else if(!(b && jeq(b, t))) out.push(t); // I deleted it but they edited it -> keep theirs
+    });
+    mine.forEach((m, i)=>{
+      if(tMap.has(m.uid)) return;
+      const b = bMap.get(m.uid);
+      if(b && jeq(b, m)) return; // they deleted it, I didn't edit it -> stays deleted
+      // insert right after the item that precedes it on this device
+      let pos = out.length;
+      for(let j=i-1; j>=0; j--){ const idx = out.findIndex(x=>x.uid===mine[j].uid); if(idx>=0){ pos = idx+1; break; } }
+      out.splice(pos, 0, m);
+    });
+    return out;
+  }
+  // plain list (invoice lines, daily sales...): keep theirs, drop what I removed, add what I added
+  const key = x=>JSON.stringify(x);
+  const count = arr=>{ const m = new Map(); arr.forEach(x=>{ const k = key(x); m.set(k, (m.get(k)||0)+1); }); return m; };
+  const ref = base!==undefined ? base : theirs; // no common base: treat theirs as the reference (union, no duplicates)
+  const bC = count(ref), mC = count(mine);
+  const removed = new Map(); bC.forEach((n,k)=>{ const d = n-(mC.get(k)||0); if(d>0) removed.set(k, d); });
+  const addedFront = [], addedBack = [];
+  const seenB = new Map(bC);
+  mine.forEach((x,i)=>{
+    const k = key(x); const left = seenB.get(k)||0;
+    if(left>0){ seenB.set(k, left-1); return; }
+    (i < mine.length/2 ? addedFront : addedBack).push(x);
+  });
+  const out = [];
+  theirs.forEach(x=>{
+    const k = key(x); const r = removed.get(k)||0;
+    if(base!==undefined && r>0){ removed.set(k, r-1); return; }
+    out.push(x);
+  });
+  return [...addedFront, ...out, ...addedBack];
+}
+function mergeUnitJson(name, baseJson, mineJson, theirsJson){
+  if(mineJson===theirsJson) return mineJson;
+  if(theirsJson==null && mineJson!=null && baseJson!=null && mineJson!==baseJson) return mineJson; // they deleted, I edited
+  if(theirsJson==null) return baseJson===mineJson ? null : mineJson;
+  if(mineJson==null) return (baseJson!=null && baseJson===theirsJson) ? null : theirsJson;
+  const parse = j => j==null ? undefined : JSON.parse(j);
+  let merged = merge3(parse(baseJson), parse(mineJson), parse(theirsJson));
+  if(name==="inventory" && Array.isArray(merged)){
+    // two people adding a product at the same moment can pick the same #; renumber the later one
+    const seen = new Set(); let max = Math.max(0, ...merged.map(p=>p.num||0));
+    merged.forEach(p=>{ if(seen.has(p.num)) p.num = ++max; seen.add(p.num); });
+  }
+  return JSON.stringify(merged);
+}
+
+/* ---------- cloud reads/writes ---------- */
+const syncCol = ()=>db.collection(SYNC_COL);
+// each upload gets its own doc ids (content hash + random tag), so cleaning up an old version can never
+// delete docs that a newer save is using
+const chunkId = (entry, i)=>"c_" + entry.h + (entry.t ? "_" + entry.t : "") + "_" + i;
+function withTimeout(p, ms, what){
+  return Promise.race([p, new Promise((_, rej)=>setTimeout(()=>rej(new Error((what||"Request") + " timed out")), ms))]);
+}
+async function readUnit(entry){
+  const gets = [];
+  for(let i=0; i<entry.n; i++) gets.push(syncCol().doc(chunkId(entry, i)).get());
+  const snaps = await Promise.all(gets);
+  const parts = snaps.map(s=>{ const d = s.data(); if(!d) throw new Error("stale"); return d.data; });
+  const json = parts.join("");
+  if(hashStr(json)!==entry.h) throw new Error("stale");
+  return json;
+}
+async function writeUnitChunks(jsonByName, entries){
+  // content-addressed docs: safe to write before the meta update (an unreferenced doc is harmless)
+  let batch = db.batch(), ops = 0, bytes = 0;
+  const flush = async()=>{ if(ops){ await batch.commit(); batch = db.batch(); ops = 0; bytes = 0; } };
+  for(const name of Object.keys(jsonByName)){
+    const json = jsonByName[name];
+    if(json==null) continue;
+    const parts = chunkString(json, CHUNK_SIZE);
+    for(let i=0; i<parts.length; i++){
+      if(ops>=400 || bytes + parts[i].length*3 > 8000000) await flush();
+      batch.set(syncCol().doc(chunkId(entries[name], i)), {data: parts[i]});
+      ops++; bytes += parts[i].length*3;
+    }
+  }
+  await flush();
+}
+function chunkString(str, size){
+  // never cut an emoji (surrogate pair) in half -- the halves can't be stored and come back as �
+  const out = [];
+  let i = 0;
+  while(i < str.length){
+    let end = Math.min(i + size, str.length);
+    if(end < str.length){ const c = str.charCodeAt(end-1); if(c>=0xD800 && c<=0xDBFF) end--; }
+    out.push(str.slice(i, end)); i = end;
+  }
+  return out.length ? out : [""];
+}
+async function deleteOrphanChunks(oldEntries){
+  try{
+    const s = await syncCol().doc("meta").get();
+    const live = new Set(Object.values((s.exists && s.data().units) || {}).map(e=>chunkId(e, 0)));
+    const batch = db.batch(); let ops = 0;
+    oldEntries.forEach(e=>{ if(e && !live.has(chunkId(e, 0))) for(let i=0; i<e.n; i++){ batch.delete(syncCol().doc(chunkId(e, i))); ops++; } });
+    if(ops) await batch.commit();
+  }catch(e){ console.warn("chunk cleanup skipped", e); }
+}
+
+/* ---------- saving ---------- */
+let cloudSaveTimer = null, saveQueued = false;
+/* Saves and incoming teammate updates run one at a time, in order, so they can't trip over each other. */
+let syncQueue = Promise.resolve();
+function enqueueSync(fn){
+  const p = syncQueue.then(fn);
+  syncQueue = p.catch(e=>{ console.warn("sync step failed", e); });
+  return p;
+}
+function scheduleCloudSave(delay){
   if(!window.db) return;
+  if(!syncReady) { updateSyncBadge(); return; } // not reconciled yet -- connect() will push pending edits
   syncState.status = "syncing"; updateSyncBadge();
   clearTimeout(cloudSaveTimer);
-  cloudSaveTimer = setTimeout(cloudSaveNow, 1200);
+  cloudSaveTimer = setTimeout(cloudSaveNow, delay==null ? 1500 : delay);
 }
-
-async function fetchCloudChunks(meta){
-  const gets = [];
-  for(let i=0; i<meta.chunkCount; i++) gets.push(db.collection('stationManagerSync').doc('chunk_'+i).get());
-  const snaps = await Promise.all(gets);
-  return snaps.map(s=>{
-    const d = s.data();
-    return d ? d.data : "";
-  }).join('');
+function cloudSaveNow(){
+  if(!window.db || !syncReady) return Promise.resolve();
+  clearTimeout(cloudSaveTimer);
+  if(saveQueued) return syncQueue;
+  saveQueued = true;
+  return enqueueSync(async()=>{ saveQueued = false; await cloudSaveInner(); });
 }
-
-async function cloudLoadInitial(){
-  if(!window.db){ syncState.status = "nocloud"; updateSyncBadge(); return false; }
+async function cloudSaveInner(){
   try{
-    const metaSnap = await db.collection('stationManagerSync').doc('meta').get();
-    if(!metaSnap.exists){
-      // Nothing in the cloud yet -- this copy becomes the shared starting point.
-      syncState.rev = 0;
-      await cloudSaveNow();
-      return true;
+    for(let attempt=0; attempt<5; attempt++){
+      const sent = unitsOf(DATA);
+      const sentH = hashesOf(sent);
+      const touched = [...new Set([...Object.keys(sent), ...Object.keys(syncBase.hashes)])].filter(n=>sentH[n]!==syncBase.hashes[n]);
+      if(!touched.length){ markSynced(); return; }
+      const force = forceNextSave;
+      // 1) look at the cloud's current version of the sections we touched
+      const metaSnap = await withTimeout(syncCol().doc("meta").get(), 20000, "Cloud check");
+      const meta = metaSnap.exists ? metaSnap.data() : {rev:0, units:{}};
+      const cloudUnits = meta.units || {};
+      const finalJson = {}, merged = [];
+      for(const n of touched){
+        const cloudH = cloudUnits[n] ? cloudUnits[n].h : undefined;
+        if(cloudH===sentH[n]){ // cloud already has exactly this
+          if(sent[n]==null){ delete syncBase.json[n]; delete syncBase.hashes[n]; } else { syncBase.json[n] = sent[n]; syncBase.hashes[n] = cloudH; }
+          continue;
+        }
+        if(force || cloudH===syncBase.hashes[n]){ finalJson[n] = sent[n]==null ? null : sent[n]; continue; }
+        // someone else changed this same section since we last synced -> merge instead of overwrite
+        const theirs = cloudH ? await withTimeout(readUnit(cloudUnits[n]), 30000, "Cloud read") : null;
+        finalJson[n] = mergeUnitJson(n, syncBase.json[n]==null ? null : syncBase.json[n], sent[n]==null ? null : sent[n], theirs);
+        merged.push(n);
+      }
+      if(!Object.keys(finalJson).length){ saveLocalSoon(); markSynced(); return; }
+      const newUnits = Object.assign({}, cloudUnits);
+      const oldEntries = [];
+      const tag = Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+      Object.keys(finalJson).forEach(n=>{
+        if(cloudUnits[n]) oldEntries.push(cloudUnits[n]);
+        if(finalJson[n]==null) delete newUnits[n];
+        else newUnits[n] = {h: hashStr(finalJson[n]), n: chunkString(finalJson[n], CHUNK_SIZE).length, t: tag};
+      });
+      // 2) upload the section contents
+      await withTimeout(writeUnitChunks(finalJson, newUnits), 120000, "Upload");
+      // 3) atomically point meta at them -- only if nobody changed those sections in the meantime
+      let conflict = false, newRev = 0;
+      await withTimeout(db.runTransaction(async tx=>{
+        const s = await tx.get(syncCol().doc("meta"));
+        const m = s.exists ? s.data() : {rev:0, units:{}};
+        const cu = m.units || {};
+        conflict = Object.keys(finalJson).some(n=>((cu[n]||{}).h) !== ((cloudUnits[n]||{}).h));
+        if(conflict) return;
+        // sections we didn't touch may have changed too -- keep the cloud's latest for those
+        const out = Object.assign({}, cu);
+        Object.keys(finalJson).forEach(n=>{ if(newUnits[n]) out[n] = newUnits[n]; else delete out[n]; });
+        newRev = (m.rev||0) + 1;
+        tx.set(syncCol().doc("meta"), {rev:newRev, schema:2, updatedBy:CLIENT_ID, updatedAt:firebase.firestore.FieldValue.serverTimestamp(), units:out});
+      }), 30000, "Cloud save");
+      if(conflict) continue; // someone saved the same section a moment ago -- go round again and merge with theirs
+      // 4) success: remember what the cloud now has for these sections
+      Object.keys(finalJson).forEach(n=>{
+        if(finalJson[n]==null){ delete syncBase.json[n]; delete syncBase.hashes[n]; }
+        else { syncBase.json[n] = finalJson[n]; syncBase.hashes[n] = newUnits[n].h; }
+      });
+      if(merged.length || Object.keys(finalJson).some(n=>finalJson[n]!==sent[n])){
+        // fold merged results back into what's on screen, keeping anything typed while we were saving
+        const now = unitsOf(DATA);
+        let changed = false;
+        Object.keys(finalJson).forEach(n=>{
+          const cur = now[n]==null ? null : now[n];
+          const res = cur===(sent[n]==null?null:sent[n]) ? finalJson[n] : mergeUnitJson(n, sent[n]==null?null:sent[n], cur, finalJson[n]);
+          if(res!==cur){ setUnit(DATA, n, res); changed = true; }
+        });
+        if(changed){ DATA_VERSION++; renderSoon(); toast("Merged your changes with a teammate's"); }
+      }
+      forceNextSave = false;
+      // clean up replaced section docs a bit later, so anyone mid-download of the previous version can finish
+      setTimeout(()=>deleteOrphanChunks(oldEntries), 90000);
+      saveLocalSoon();
+      markSynced();
+      // if anything else changed while we were saving, go again
+      const again = hashesOf(unitsOf(DATA));
+      if(Object.keys(again).some(n=>again[n]!==syncBase.hashes[n]) || Object.keys(syncBase.hashes).some(n=>!(n in again))) continue;
+      return;
     }
+    scheduleCloudSave(3000);
+  }catch(e){
+    console.warn("Cloud save failed", e);
+    setOffline(e);
+  }
+}
+function markSynced(){
+  syncState.status = "synced"; syncState.lastSyncedAt = new Date(); syncState.error = ""; syncState.retryDelay = 15000;
+  updateSyncBadge();
+}
+function hasUnsyncedChanges(){
+  const h = hashesOf(unitsOf(DATA));
+  return Object.keys(h).some(n=>h[n]!==syncBase.hashes[n]) || Object.keys(syncBase.hashes).some(n=>!(n in h));
+}
+function setOffline(e){
+  syncState.status = "error";
+  syncState.error = (e && (e.code || e.message)) ? String(e.code || e.message) : "unknown";
+  updateSyncBadge();
+  clearTimeout(syncState.retryTimer);
+  syncState.retryTimer = setTimeout(()=>{ syncReady ? cloudSaveNow() : connectCloud(); }, syncState.retryDelay);
+  syncState.retryDelay = Math.min(syncState.retryDelay*2, 120000);
+}
+
+/* ---------- receiving teammates' changes ---------- */
+function applyRemoteMeta(meta){
+  return enqueueSync(async()=>{
+    for(let attempt=0; ; attempt++){
+      try{ return await applyRemoteMetaNow(meta); }
+      catch(e){
+        // a teammate saved again while we were downloading -- grab the newest version list and retry
+        if(String(e && e.message)!=="stale" || attempt>=4) throw e;
+        await new Promise(r=>setTimeout(r, 400*(attempt+1)));
+        const s = await withTimeout(syncCol().doc("meta").get(), 20000, "Cloud check");
+        if(!s.exists) return false;
+        meta = s.data();
+      }
+    }
+  });
+}
+async function applyRemoteMetaNow(meta){
+  const cloudUnits = meta.units || {};
+  const names = [...new Set([...Object.keys(cloudUnits), ...Object.keys(syncBase.hashes)])]
+    .filter(n=>((cloudUnits[n]||{}).h) !== syncBase.hashes[n]);
+  if(!names.length) return false;
+  const theirs = {};
+  for(const n of names){
+    theirs[n] = cloudUnits[n] ? await withTimeout(readUnit(cloudUnits[n]), 30000, "Cloud read") : null;
+  }
+  const mine = unitsOf(DATA);
+  let changedScreen = false, needPush = false;
+  names.forEach(n=>{
+    const m = mine[n]==null ? null : mine[n];
+    const b = syncBase.json[n]==null ? null : syncBase.json[n];
+    let result;
+    if(m===b) result = theirs[n];                       // no local edits here -> take theirs
+    else if(m===theirs[n]) result = m;                  // same either way
+    else { result = mergeUnitJson(n, b, m, theirs[n]); needPush = true; } // both edited -> merge
+    if(result!==m){ setUnit(DATA, n, result); changedScreen = true; }
+    if(theirs[n]==null){ delete syncBase.json[n]; delete syncBase.hashes[n]; }
+    else { syncBase.json[n] = theirs[n]; syncBase.hashes[n] = cloudUnits[n].h; }
+  });
+  if(changedScreen){
+    if(migrate(DATA)) needPush = true;
+    DATA_VERSION++;
+    renderSoon();
+  }
+  saveLocalSoon();
+  if(needPush || hasUnsyncedChanges()) scheduleCloudSave(800);
+  return changedScreen;
+}
+/* Don't redraw the page out from under someone who's typing (e.g. mid-count) -- wait until they pause. */
+let renderPending = false, renderIdleTimer = null;
+function isTyping(){
+  const a = document.activeElement;
+  return a && a!==document.body && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && document.getElementById('main') && document.getElementById('main').contains(a);
+}
+function renderSoon(){
+  renderPending = true;
+  clearTimeout(renderIdleTimer);
+  if(!isTyping() && !document.querySelector('.modal-backdrop')){ renderPending = false; render(); return; }
+  renderIdleTimer = setTimeout(renderSoon, 2500);
+}
+
+let metaUnsub = null, legacyUnsub = null;
+function startCloudListener(){
+  if(!window.db || metaUnsub) return;
+  metaUnsub = syncCol().doc("meta").onSnapshot(snap=>{
+    if(!snap.exists || snap.metadata.hasPendingWrites) return;
+    applyRemoteMeta(snap.data()).then(changed=>{
+      if(changed) toast("Updated with a teammate's changes");
+      if(syncState.status!=="syncing" && !hasUnsyncedChanges()) markSynced();
+    }).catch(e=>{ console.warn("Applying cloud update failed", e); });
+  }, err=>{ console.warn("Cloud listener error", err); metaUnsub = null; setOffline(err); syncReady = false; });
+  // Watch the OLD sync location too: if a device still running the old version saves there, its changes
+  // won't reach anyone -- say so, so they know to refresh.
+  if(legacyUnsub) return;
+  try{
+    let first = true, firstRev = null;
+    legacyUnsub = db.collection(LEGACY_COL).doc('meta').onSnapshot(snap=>{
+      const d = snap.exists ? snap.data() : null;
+      if(first){ first = false; firstRev = d ? d.rev : null; return; }
+      if(d && d.rev!==firstRev){ syncState.legacyWriter = true; updateSyncBadge(); }
+    }, ()=>{});
+  }catch(e){}
+}
+
+/* ---------- connecting / first run on this version ---------- */
+async function loadLegacyCloud(){
+  try{
+    const metaSnap = await withTimeout(db.collection(LEGACY_COL).doc('meta').get(), 20000, "Old cloud check");
+    if(!metaSnap.exists) return null;
     const meta = metaSnap.data();
-    const json = await fetchCloudChunks(meta);
-    const parsed = JSON.parse(json);
+    const gets = [];
+    for(let i=0; i<meta.chunkCount; i++) gets.push(db.collection(LEGACY_COL).doc('chunk_'+i).get());
+    const snaps = await withTimeout(Promise.all(gets), 60000, "Old cloud read");
+    const parsed = JSON.parse(snaps.map(s=>{ const d = s.data(); return d ? d.data : ""; }).join(''));
     migrate(parsed);
-    DATA = parsed;
-    saveData(DATA);
-    syncState.rev = meta.rev;
-    syncState.lastChunkCount = meta.chunkCount;
-    syncState.status = "synced";
-    updateSyncBadge();
+    return parsed;
+  }catch(e){ console.warn("Legacy cloud read failed", e); return null; }
+}
+async function loadAllUnits(meta){
+  const out = {};
+  const names = Object.keys(meta.units||{});
+  const jsons = await withTimeout(Promise.all(names.map(n=>readUnit(meta.units[n]))), 90000, "Cloud download");
+  names.forEach((n,i)=>out[n] = jsons[i]);
+  return out;
+}
+function sameUnits(a, b){
+  const ka = Object.keys(a), kb = Object.keys(b);
+  return ka.length===kb.length && ka.every(k=>a[k]===b[k]);
+}
+let connecting = false;
+async function connectCloud(){
+  if(!window.db){ syncState.status = "nocloud"; updateSyncBadge(); return false; }
+  if(connecting) return false;
+  connecting = true;
+  syncState.status = syncState.status==="error" ? "error" : "connecting"; updateSyncBadge();
+  try{
+    let metaSnap = await withTimeout(syncCol().doc("meta").get(), 20000, "Cloud check");
+    const haveBase = Object.keys(syncBase.hashes).length > 0;
+    if(metaSnap.exists && haveBase){
+      // normal start: pull teammates' changes (merging with anything edited here while offline), then push ours
+      syncReady = true;
+      await applyRemoteMeta(metaSnap.data());
+      if(hasUnsyncedChanges()) await cloudSaveNow(); else markSynced();
+    } else if(metaSnap.exists){
+      // first time this device runs the new version
+      const cloudJson = await loadAllUnits(metaSnap.data());
+      const localJson = unitsOf(DATA);
+      let choice = "cloud";
+      if(!sameUnits(localJson, cloudJson)){
+        const legacy = await loadLegacyCloud();
+        const localWasInSync = LOCAL_IS_FRESH || (legacy && sameUnits(localJson, unitsOf(legacy)));
+        if(!localWasInSync) choice = await askWhichCopy(DATA, dataFromUnits(cloudJson), true);
+        if(choice==="merge"){
+          const baseUnits = legacy ? unitsOf(legacy) : {};
+          const names = [...new Set([...Object.keys(localJson), ...Object.keys(cloudJson)])];
+          const mergedUnits = {};
+          names.forEach(n=>{ const r = mergeUnitJson(n, baseUnits[n]==null?null:baseUnits[n], localJson[n]==null?null:localJson[n], cloudJson[n]==null?null:cloudJson[n]); if(r!=null) mergedUnits[n] = r; });
+          DATA = dataFromUnits(mergedUnits);
+        } else if(choice==="cloud"){
+          DATA = dataFromUnits(cloudJson);
+        }
+      } else { DATA = dataFromUnits(cloudJson); }
+      migrate(DATA);
+      syncBase = {json: Object.assign({}, cloudJson), hashes: hashesOf(cloudJson)};
+      syncReady = true;
+      DATA_VERSION++; render(); saveLocalSoon();
+      if(hasUnsyncedChanges()) await cloudSaveNow(); else markSynced();
+    } else {
+      // very first device on the new version: carry the shared data over from the old sync
+      const legacy = await loadLegacyCloud();
+      if(legacy && !LOCAL_IS_FRESH && !sameUnits(unitsOf(DATA), unitsOf(legacy))){
+        const choice = await askWhichCopy(DATA, legacy, false);
+        if(choice==="cloud") DATA = legacy;
+        else if(choice==="merge"){
+          const l = unitsOf(DATA), c = unitsOf(legacy), mergedUnits = {};
+          [...new Set([...Object.keys(l), ...Object.keys(c)])].forEach(n=>{ const r = mergeUnitJson(n, null, l[n]==null?null:l[n], c[n]==null?null:c[n]); if(r!=null) mergedUnits[n] = r; });
+          DATA = dataFromUnits(mergedUnits);
+        }
+      } else if(legacy){ DATA = legacy; }
+      migrate(DATA);
+      syncBase = {json:{}, hashes:{}};
+      syncReady = true; forceNextSave = true;
+      DATA_VERSION++; render(); saveLocalSoon();
+      await cloudSaveNow();
+    }
+    startCloudListener();
+    connecting = false;
     return true;
   }catch(e){
-    console.warn("Cloud load failed", e);
-    syncState.status = "error";
-    updateSyncBadge();
+    console.warn("Cloud connect failed", e);
+    connecting = false;
+    setOffline(e);
     return false;
   }
 }
 
-function startCloudListener(){
-  if(!window.db) return;
-  db.collection('stationManagerSync').doc('meta').onSnapshot(async (snap)=>{
-    if(!snap.exists) return;
-    if(snap.metadata.hasPendingWrites) return; // our own write, not yet confirmed -- ignore the echo
-    const meta = snap.data();
-    if(meta.updatedBy === CLIENT_ID) return; // our own confirmed write -- already applied locally
-    if(meta.rev === syncState.rev) return; // nothing new
-    try{
-      const json = await fetchCloudChunks(meta);
-      const parsed = JSON.parse(json);
-      migrate(parsed);
-      DATA = parsed;
-      saveData(DATA);
-      syncState.rev = meta.rev;
-      syncState.lastChunkCount = meta.chunkCount;
-      syncState.status = "synced";
-      updateSyncBadge();
-      render();
-      toast("Updated with a teammate's changes");
-    }catch(e){ console.warn("Cloud listener refresh failed", e); }
-  }, err=>{ console.warn("Cloud listener error", err); syncState.status = "error"; updateSyncBadge(); });
+/* One-time question when this device's saved copy differs from the shared copy and we can't tell which
+   is right (e.g. a count that never made it to the cloud vs. a device that's just out of date). */
+function copySummary(d){
+  const reports = Object.keys(d.inventoryReports||{});
+  const latestReport = reports.map(k=>d.inventoryReports[k]).sort((a,b)=>(a.generatedAt||"").localeCompare(b.generatedAt||"")).pop();
+  const inv = d.inventory||[];
+  const lastInvoice = (d.invoiceEntries||[]).map(e=>(e.date||"").slice(0,10)).filter(Boolean).sort().pop();
+  const value = inv.reduce((s,p)=>s+num(p.closing)*num(p.cost),0);
+  return {
+    products: inv.length,
+    counted: inv.filter(p=>num(p.closing)>0).length,
+    value,
+    snapshots: reports.length,
+    latestSnapshot: latestReport ? `${latestReport.month} ${latestReport.year} (made ${latestReport.generatedAt ? new Date(latestReport.generatedAt).toLocaleDateString() : "?"})` : "none",
+    invoiceLines: (d.invoiceEntries||[]).length,
+    lastInvoice: lastInvoice || "none"
+  };
 }
+function askWhichCopy(localData, cloudData, cloudIsShared){
+  return new Promise(resolve=>{
+    const L = copySummary(localData), C = copySummary(cloudData);
+    const row = (label, a, b)=>`<tr><td>${label}</td><td style="${a!==b?'font-weight:700;':''}">${a}</td><td style="${a!==b?'font-weight:700;':''}">${b}</td></tr>`;
+    const backdrop = document.createElement('div');
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `
+      <div class="modal-card" style="max-width:640px;">
+        <h2>⚠️ This computer's data doesn't match the shared copy</h2>
+        <div class="sub">The site's syncing was upgraded so everyone always sees the same data. Before switching over, pick which copy to keep. Differences are in <b>bold</b>. If you did a count or entered invoices on <b>this</b> computer that coworkers couldn't see, keep or combine this computer's copy.</div>
+        <div class="tablewrap" style="max-height:none;margin-bottom:12px;"><table>
+          <thead><tr><th></th><th>This computer</th><th>Shared copy (everyone)</th></tr></thead>
+          <tbody>
+            ${row("Products", L.products.toLocaleString(), C.products.toLocaleString())}
+            ${row("Products with a count", L.counted.toLocaleString(), C.counted.toLocaleString())}
+            ${row("Inventory value (counts × cost)", fmtUSD(L.value), fmtUSD(C.value))}
+            ${row("Saved snapshots", L.snapshots, C.snapshots)}
+            ${row("Newest snapshot", L.latestSnapshot, C.latestSnapshot)}
+            ${row("Invoice lines", L.invoiceLines.toLocaleString(), C.invoiceLines.toLocaleString())}
+            ${row("Latest invoice date", L.lastInvoice, C.lastInvoice)}
+          </tbody></table></div>
+        <div class="btnrow" style="flex-direction:column;align-items:stretch;gap:8px;">
+          <button class="btn" id="wcBackup">⬇ First, download a backup of this computer's copy (recommended)</button>
+          <button class="btn primary" id="wcCloud">Use the shared copy <span style="font-weight:400;">— this computer was just out of date</span></button>
+          <button class="btn" id="wcMerge">Combine both <span style="font-weight:400;">— add this computer's changes into the shared copy</span></button>
+          <button class="btn" id="wcLocal">Use this computer's copy <span style="font-weight:400;">— replaces the shared copy for everyone</span></button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    const done = c=>{ backdrop.remove(); resolve(c); };
+    document.getElementById('wcBackup').onclick = ()=>{
+      downloadTextFile(`station-manager-backup-this-computer-${new Date().toISOString().slice(0,10)}.json`, JSON.stringify(localData), "application/json");
+      toast("Backup downloaded");
+    };
+    document.getElementById('wcCloud').onclick = ()=>done("cloud");
+    document.getElementById('wcMerge').onclick = ()=>done("merge");
+    document.getElementById('wcLocal').onclick = ()=>{
+      if(!confirm("Replace the shared copy for everyone with this computer's copy?")) return;
+      done("local");
+    };
+  });
+}
+
+/* ---------- status display ---------- */
+function updateSyncBadge(){
+  const el = document.getElementById('sidebarFoot');
+  const t = syncState.lastSyncedAt ? syncState.lastSyncedAt.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}) : "";
+  const labels = {
+    connecting: "Connecting to shared data...",
+    syncing: "↻ Syncing...",
+    synced: "● Synced — everyone sees your changes" + (t ? ` (${t})` : ""),
+    error: "⚠ NOT SYNCED — see red bar",
+    nocloud: "Local data · saved in this browser"
+  };
+  if(el) el.textContent = labels[syncState.status] || labels.nocloud;
+  let bar = document.getElementById('syncBar');
+  const showErr = syncState.status==="error" || syncState.status==="nocloud";
+  const err = (syncState.error||"").toLowerCase();
+  const why = /permission|insufficient/.test(err) ? " The shared database is refusing access — its security rules may have expired (Firebase console → Firestore → Rules)."
+    : /exhausted|quota/.test(err) ? " The shared database hit its free daily limit; it resets overnight."
+    : syncState.status==="nocloud" ? " The sync service didn't load \u2014 no internet when the page opened, or a browser ad/privacy blocker is blocking gstatic.com / firestore.googleapis.com."
+    : "";
+  const msg = showErr
+    ? `⚠ Not connected to the shared data — you're seeing this device's copy${t ? ` (last synced ${t})` : ""}.${why} Changes you make are saved here and will upload automatically when the connection is back. <button class="btn small" id="syncRetryBtn" style="margin-left:8px;">Retry now</button>`
+    : (syncState.legacyWriter ? `⚠ Someone is using an old copy of this site — their changes aren't being shared. Have everyone close the site and reopen it (or refresh).` : "");
+  if(!msg){ if(bar) bar.remove(); document.body.style.paddingTop = ""; return; }
+  if(!bar){
+    bar = document.createElement('div'); bar.id = "syncBar";
+    bar.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:1002;background:var(--red);color:#fff;padding:9px 16px;font-size:13px;font-weight:600;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.25);";
+    document.body.appendChild(bar);
+  }
+  bar.innerHTML = msg;
+  document.body.style.paddingTop = bar.offsetHeight + "px";
+  const rb = document.getElementById('syncRetryBtn');
+  if(rb) rb.onclick = ()=>{ if(!window.db){ saveLocalNow().then(()=>location.reload()); return; } syncState.retryDelay = 15000; clearTimeout(syncState.retryTimer); syncReady ? cloudSaveNow() : connectCloud(); };
+}
+window.addEventListener('online', ()=>{ if(syncState.status==="error"){ clearTimeout(syncState.retryTimer); syncReady ? cloudSaveNow() : connectCloud(); } });
+window.addEventListener('beforeunload', e=>{
+  if(syncReady && hasUnsyncedChanges() && syncState.status!=="error"){ e.preventDefault(); e.returnValue = ""; }
+});
+window.addEventListener('pagehide', ()=>{ saveLocalNow(); });
 
 function toast(msg, bad){
   const t = document.getElementById('toast');
@@ -1883,21 +2411,76 @@ function currentFiscalQuarter(d){
   return 4;
 }
 
-function ensureProduct(name, category, unit, cost, retail){
-  // Match on name + category + unit so products that share a name but come in different
-  // sizes (e.g. Milwaukee's Best Light 4pk / 15pk / 24pk) stay as separate records.
-  let p = DATA.inventory.find(x=>x.name===name && (!category || x.category===category) && (unit===undefined || (x.unit||"")===(unit||"")));
-  if(p) return p;
+/* Category names in the Product List are UPPERCASE (GROCERY, SODA...), but invoices and the add forms
+   let people type "Grocery" or "soda ". Without this, a product typed as "Grocery" became its own
+   separate category -- it showed up on a different Count Sheet page / filter than everything else, so
+   it looked like it never got added. Always resolve a typed category to the existing one. */
+function canonCategory(c){
+  const t = String(c||"").replace(/\s+/g,' ').trim();
+  if(!t) return "Uncategorized";
+  const existing = DATA.inventory.find(p=>normName(p.category)===normName(t));
+  return existing ? existing.category : t.toUpperCase();
+}
+function findProduct(name, unit, category){
+  const n = normName(name), u = normUnit(unit);
+  const sameNameUnit = DATA.inventory.filter(x=>normName(x.name)===n && normUnit(x.unit)===u);
+  if(sameNameUnit.length<=1 || !category) return sameNameUnit[0] || null;
+  const c = normName(category);
+  return sameNameUnit.find(x=>normName(x.category)===c) || sameNameUnit[0];
+}
+function newProductUid(){ return "p" + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+/* Adds a product to the master list (which feeds Product List, Received Log, Inventory Count and the
+   Count Sheet). It's inserted right after the last product in the same category instead of at the very
+   end of the list, so it shows up with its category everywhere. */
+function addProductRecord(fields){
+  const category = canonCategory(fields.category);
   const nextNum = Math.max(0, ...DATA.inventory.map(pp=>pp.num||0)) + 1;
-  p = {num:nextNum, name, category: category||"Uncategorized", unit: unit||"", par:0, closing:0, sold:0,
-    cost: cost||0, retail: retail||0, closing_value:0, sales_value:0, status:"\ud83d\udd34 OUT OF STOCK",
-    opening:0, received_qty:0, notes:"", buydown:0, multipack_qty:null, multipack_deal_price:null};
-  DATA.inventory.push(p);
+  const p = {num:nextNum, uid:newProductUid(), name:String(fields.name||"").trim(), category, unit:String(fields.unit||"").trim(),
+    par:num(fields.par), closing:0, sold:0, cost:num(fields.cost), retail:num(fields.retail), closing_value:0, sales_value:0,
+    status:"\ud83d\udd34 OUT OF STOCK", opening:0, received_qty:0, notes:"", buydown:0, multipack_qty:null, multipack_deal_price:null,
+    addedAt:new Date().toISOString()};
+  let lastIdx = -1;
+  DATA.inventory.forEach((x,i)=>{ if(x.category===category) lastIdx = i; });
+  if(lastIdx>=0) DATA.inventory.splice(lastIdx+1, 0, p); else DATA.inventory.push(p);
   return p;
 }
+function isNewProduct(p){
+  if(!p || !p.addedAt) return false;
+  return (Date.now() - new Date(p.addedAt).getTime()) < 45*24*3600*1000;
+}
+function newBadge(p){ return isNewProduct(p) ? ' <span class="pill ok" style="font-size:10px;" title="Added '+new Date(p.addedAt).toLocaleDateString()+'">NEW</span>' : ''; }
+function ensureProduct(name, category, unit, cost, retail){
+  // Match on name + unit (ignoring capitalization/extra spaces) so products that share a name but come
+  // in different sizes (e.g. Milwaukee's Best Light 4pk / 15pk / 24pk) stay as separate records, and
+  // "Pepsi 20oz" typed as "pepsi 20oz" doesn't create a duplicate.
+  const p = findProduct(name, unit, category);
+  if(p) return p;
+  return addProductRecord({name, category, unit, cost, retail});
+}
 
+/* Invoice lines are matched to products ignoring capitalization/extra spaces -- invoices are typed with
+   "Grocery"/"Soda" while the Product List uses GROCERY/SODA, and an exact match missed those lines. The
+   lookup index is rebuilt whenever data changes (DATA_VERSION bumps on every save / teammate update). */
+let DATA_VERSION = 0;
+let _receivedIndex = null, _receivedIndexSig = null;
+function receivedIndex(){
+  const sig = DATA_VERSION + "|" + DATA.invoiceEntries.length;
+  if(_receivedIndex && _receivedIndexSig===sig && _receivedIndex.src===DATA.invoiceEntries) return _receivedIndex.map;
+  const map = new Map();
+  DATA.invoiceEntries.forEach(e=>{
+    if(e.reconciled) return;
+    const k = normName(e.name);
+    if(!map.has(k)) map.set(k, []);
+    map.get(k).push(e);
+  });
+  _receivedIndex = {map, src:DATA.invoiceEntries};
+  _receivedIndexSig = sig;
+  return map;
+}
 function productReceived(p){
-  const live = DATA.invoiceEntries.filter(e=>!e.reconciled && e.name===p.name && (e.category===p.category || !e.category) && ((e.unit||"")===(p.unit||"") || !e.unit))
+  const list = receivedIndex().get(normName(p.name)) || [];
+  const pc = normName(p.category), pu = normUnit(p.unit);
+  const live = list.filter(e=>(!e.category || normName(e.category)===pc) && (!e.unit || normUnit(e.unit)===pu))
     .reduce((s,e)=>s+num(e.qty),0);
   return live > 0 ? live : num(p.received_qty);
 }
@@ -2171,7 +2754,7 @@ function periodBounds(fromKey, toKey){
     fromProducts: fromReport ? fromReport.products : null,
     toProducts: toReport ? toReport.products : DATA.inventory,
     fromLabel: fromReport ? inventoryReportLabel(fromKey) : "",
-    toLabel: toReport ? inventoryReportLabel(toKey) : "Live \u2014 Current Counts (today)"
+    toLabel: toReport ? inventoryReportLabel(toKey) : "Most Recent Count \u2014 current counts (" + new Date().toLocaleDateString() + ")"
   };
 }
 /* ---- Pricing consistency check: flags products whose price/margin looks out of line with peers ----
@@ -2348,16 +2931,34 @@ function generateDistributorReport(distributorFilter, fromKey, toKey, threshold)
    Ending Book -- negative means less on the shelf than the books say (shrink), positive means more
    than expected. Uses the same fromKey/toKey/"live" period picking as Distributor Reports
    (periodBounds), so "most current count" always means whatever was picked in the To dropdown. */
-let officeReportState = {fromKey:"", toKey:"live", expanded:null};
+let officeReportState = {fromKey:"", toKey:"live", expanded:null, mode:"compare", snapKey:"live", cmpCat:"ALL", cmpChangedOnly:false, cmpSearch:""};
 function initOfficeReportStateDefaults(reportKeys){
-  if(officeReportState.fromKey) return;
-  if(reportKeys.length>=2){
-    officeReportState.fromKey = reportKeys[reportKeys.length-2];
-    officeReportState.toKey = reportKeys[reportKeys.length-1];
-  } else if(reportKeys.length===1){
-    officeReportState.fromKey = reportKeys[0];
-    if(!officeReportState.toKey) officeReportState.toKey = "live";
+  if(officeReportState.fromKey && (DATA.inventoryReports[officeReportState.fromKey])) return;
+  const d = latestCountDefaults(reportKeys);
+  officeReportState.fromKey = d.fromKey;
+  officeReportState.toKey = d.toKey;
+}
+/* "Most recent count" = the live counts in Inventory Count, unless they're exactly what the newest saved
+   snapshot already captured -- then that snapshot IS the most recent count. The starting point defaults to
+   the saved count just before it (e.g. July when the most recent is September). */
+function snapshotMatchesLive(key){
+  const r = DATA.inventoryReports[key];
+  if(!r || !Array.isArray(r.products)) return false;
+  const m = new Map(r.products.map(p=>[normName(p.name)+"||"+normUnit(p.unit), num(p.closing)]));
+  let diffs = 0;
+  DATA.inventory.forEach(p=>{
+    const k = normName(p.name)+"||"+normUnit(p.unit);
+    if(!m.has(k) ? num(p.closing)!==0 : m.get(k)!==num(p.closing)) diffs++;
+  });
+  return diffs===0;
+}
+function latestCountDefaults(reportKeys){
+  if(!reportKeys.length) return {fromKey:"", toKey:"live"};
+  const newest = reportKeys[reportKeys.length-1];
+  if(snapshotMatchesLive(newest)){
+    return {fromKey: reportKeys.length>=2 ? reportKeys[reportKeys.length-2] : "", toKey: newest};
   }
+  return {fromKey: newest, toKey: "live"};
 }
 /* Resolves an invoice line's category against the master Product List when possible, so purchases
    group into the same category buckets as Beginning Book / Physical Count even if an invoice's own
@@ -2475,8 +3076,11 @@ function renderOfficeReportsHome(el){
   const analysis = officeReportAnalysis(officeReportState.fromKey, officeReportState.toKey);
   const savedIds = Object.keys(DATA.officeReports).sort().reverse();
 
+  if(officeReportState.mode==="compare"){ renderCountComparison(el); return; }
+  if(officeReportState.mode==="snapshot"){ renderOfficeSnapshotPrint(el); return; }
   el.innerHTML = `
     ${renderReportTypeTabsHtml()}
+    ${renderOfficeModeTabsHtml()}
     <div class="note">Book-to-physical reconciliation by category: Beginning Book (last count) + Purchases (invoiced during the window) = Ending Book, compared against the Physical Count (the new count) to surface shrinkage or overage. Most useful right after you complete a new count — e.g. July → September.</div>
     <div class="card">
       <h2>Generate an Office Report</h2>
@@ -2487,7 +3091,7 @@ function renderOfficeReportsHome(el){
           ${reportKeys.map(k=>`<option value="${k}" ${officeReportState.fromKey===k?"selected":""}>${inventoryReportLabel(k)}</option>`).join("")}
         </select></div>
         <div><label>To (ending count — Physical Count)</label><select id="orhTo">
-          <option value="live" ${officeReportState.toKey==="live"?"selected":""}>Live — Current Counts (today)</option>
+          <option value="live" ${officeReportState.toKey==="live"?"selected":""}>Most Recent Count — current counts (today)</option>
           ${reportKeys.map(k=>`<option value="${k}" ${officeReportState.toKey===k?"selected":""}>${inventoryReportLabel(k)}</option>`).join("")}
         </select></div>
       </div>
@@ -2519,6 +3123,7 @@ function renderOfficeReportsHome(el){
     </div>
   `;
   wireReportTypeTabs();
+  wireOfficeModeTabs();
   document.getElementById('orhFrom').onchange = e=>{ officeReportState.fromKey = e.target.value; render(); };
   document.getElementById('orhTo').onchange = e=>{ officeReportState.toKey = e.target.value; render(); };
   const genBtn = document.getElementById('orGenerateBtn');
@@ -2637,6 +3242,280 @@ function emailOfficeReports(ids){
   setTimeout(()=>{
     window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   }, 250);
+}
+
+/* ---------- Office Reports: mode tabs (Count Comparison / Print Snapshot / Book vs Physical) ---------- */
+function renderOfficeModeTabsHtml(){
+  const m = officeReportState.mode;
+  return `<div class="subtabs no-print" style="margin-bottom:12px;">
+    <button class="${m==='compare'?'active':''}" data-ormode="compare">⇄ Compare Counts</button>
+    <button class="${m==='snapshot'?'active':''}" data-ormode="snapshot">🖶 Print Inventory Snapshot</button>
+    <button class="${m==='book'?'active':''}" data-ormode="book">📊 Book vs. Physical (by category)</button>
+  </div>`;
+}
+function wireOfficeModeTabs(){
+  document.querySelectorAll('[data-ormode]').forEach(b=>b.onclick=()=>{ officeReportState.mode = b.dataset.ormode; render(); });
+}
+function countOptionsHtml(selected, includeLive, includeBlank){
+  const keys = inventoryReportKeysSorted().slice().reverse(); // newest first
+  return `${includeBlank ? `<option value="">— pick a saved count —</option>` : ``}
+    ${includeLive ? `<option value="live" ${selected==="live"?"selected":""}>Most Recent Count — current counts (today)</option>` : ``}
+    ${keys.map(k=>`<option value="${k}" ${selected===k?"selected":""}>${inventoryReportLabel(k)}</option>`).join("")}`;
+}
+/* A report-shaped object for either a saved snapshot key or "live" (the current counts). Lets the
+   existing snapshot print / CSV / email code print the current counts without saving a snapshot first. */
+function getInventoryReport(key){
+  if(key==="live"){
+    const products = DATA.inventory.map(p=>{
+      const c = JSON.parse(JSON.stringify(p));
+      c.received_qty = productReceived(p);
+      c.sold = num(c.opening) + num(c.received_qty) - num(c.closing);
+      c.closing_value = +(num(c.closing)*num(c.cost)).toFixed(2);
+      c.sales_value = +(num(c.closing)*num(c.retail)).toFixed(2);
+      return c;
+    });
+    return {year:new Date().toLocaleDateString(), month:"Most Recent Count —", periodType:"live", generatedAt:new Date().toISOString(), products};
+  }
+  return DATA.inventoryReports[key];
+}
+
+/* ---- Count Comparison: product-by-product, one count vs another ---- */
+function countComparisonAnalysis(fromKey, toKey){
+  const pb = periodBounds(fromKey, toKey);
+  if(!pb.fromProducts) return {error:"Pick the earlier count to compare against (e.g. your July count).", fromLabel:pb.fromLabel, toLabel:pb.toLabel};
+  const keyOf = p=>normName(p.name)+"||"+normUnit(p.unit);
+  const fromMap = new Map(); pb.fromProducts.forEach(p=>fromMap.set(keyOf(p), p));
+  const toMap = new Map(); pb.toProducts.forEach(p=>toMap.set(keyOf(p), p));
+  const received = new Map();
+  DATA.invoiceEntries.forEach(e=>{
+    const d = (e.date||"").slice(0,10);
+    if(!d) return;
+    if(pb.fromDate && d <= pb.fromDate) return; // received AFTER the earlier count...
+    if(pb.toDate && d > pb.toDate) return;      // ...up to and including the later count
+    const k = normName(e.name)+"||"+normUnit(e.unit);
+    received.set(k, (received.get(k)||0) + num(e.qty));
+  });
+  const rows = [];
+  const pushRow = (k, fp, tp)=>{
+    const base = tp || fp;
+    const prev = fp ? num(fp.closing) : 0;
+    const cur = tp ? num(tp.closing) : 0;
+    const rec = received.get(k) || 0;
+    const prevCost = fp ? num(fp.cost) : num(base.cost);
+    const curCost = tp ? num(tp.cost) : prevCost;
+    const sold = prev + rec - cur;
+    rows.push({name:base.name, category:String(base.category||"Uncategorized").toUpperCase(), unit:base.unit||"",
+      prev, received:rec, expected:prev+rec, cur, change:cur-prev, sold,
+      prevValue:+(prev*prevCost).toFixed(2), curValue:+(cur*curCost).toFixed(2), valueChange:+(cur*curCost - prev*prevCost).toFixed(2),
+      soldRetail:+(sold*num(base.retail)).toFixed(2),
+      flag: !fp ? "new" : (!tp ? "gone" : (sold<0 ? "neg" : ""))});
+  };
+  pb.toProducts.forEach(tp=>pushRow(keyOf(tp), fromMap.get(keyOf(tp)), tp));
+  pb.fromProducts.forEach(fp=>{ if(!toMap.has(keyOf(fp))) pushRow(keyOf(fp), fp, null); });
+  const cats = {};
+  rows.forEach(r=>{
+    const c = cats[r.category] || (cats[r.category] = {category:r.category, prevUnits:0, curUnits:0, received:0, sold:0, prevValue:0, curValue:0, soldRetail:0, changed:0});
+    c.prevUnits += r.prev; c.curUnits += r.cur; c.received += r.received; c.sold += r.sold;
+    c.prevValue += r.prevValue; c.curValue += r.curValue; c.soldRetail += r.soldRetail;
+    if(r.change!==0) c.changed++;
+  });
+  const catRows = Object.values(cats).sort((a,b)=>a.category.localeCompare(b.category));
+  const totals = catRows.reduce((t,c)=>{ ["prevUnits","curUnits","received","sold","prevValue","curValue","soldRetail","changed"].forEach(f=>t[f]+=c[f]); return t; },
+    {prevUnits:0, curUnits:0, received:0, sold:0, prevValue:0, curValue:0, soldRetail:0, changed:0});
+  return {rows, catRows, totals, fromLabel:pb.fromLabel, toLabel:pb.toLabel, fromDate:pb.fromDate, toDate:pb.toDate, fromKey, toKey};
+}
+function countComparisonFilteredRows(a){
+  const st = officeReportState;
+  const q = (st.cmpSearch||"").toLowerCase();
+  return a.rows.filter(r=>{
+    if(st.cmpCat!=="ALL" && r.category!==st.cmpCat) return false;
+    if(st.cmpChangedOnly && r.change===0 && !r.flag) return false;
+    if(q && !r.name.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+const signed = (n, f)=> (n>0?"+":"") + (f ? f(n) : n.toLocaleString());
+const chgColor = n => n<0 ? 'var(--red)' : (n>0 ? 'var(--green)' : 'inherit');
+function cmpFlagPill(r){
+  if(r.flag==="new") return ' <span class="pill ok" title="Not in the earlier count">new</span>';
+  if(r.flag==="gone") return ' <span class="pill warn" title="In the earlier count but not in the later one">not in later count</span>';
+  if(r.flag==="neg") return ' <span class="pill bad" title="More on the shelf than earlier count + deliveries -- check the count or a missing invoice">check</span>';
+  return '';
+}
+function countComparisonCatTableHtml(a){
+  return `<table>
+    <thead><tr><th>Category</th><th>Earlier Units</th><th>Received</th><th>Latest Units</th><th>Unit Change</th><th>Units Sold*</th><th>Earlier Value</th><th>Latest Value</th><th>Value Change</th><th>Change %</th></tr></thead>
+    <tbody>${a.catRows.map(c=>{
+      const vc = c.curValue - c.prevValue; const pct = c.prevValue ? vc/c.prevValue : 0;
+      return `<tr><td>${c.category}</td><td>${c.prevUnits.toLocaleString()}</td><td>${c.received.toLocaleString()}</td><td>${c.curUnits.toLocaleString()}</td>
+        <td style="color:${chgColor(c.curUnits-c.prevUnits)}">${signed(c.curUnits-c.prevUnits)}</td><td>${c.sold.toLocaleString()}</td>
+        <td>${fmtUSD(c.prevValue)}</td><td>${fmtUSD(c.curValue)}</td><td style="color:${chgColor(vc)}">${signed(vc, fmtUSD)}</td><td>${c.prevValue?signed(+(pct*100).toFixed(1))+"%":"—"}</td></tr>`;
+    }).join("")}
+    <tr class="total"><td>GRAND TOTAL</td><td>${a.totals.prevUnits.toLocaleString()}</td><td>${a.totals.received.toLocaleString()}</td><td>${a.totals.curUnits.toLocaleString()}</td>
+      <td>${signed(a.totals.curUnits-a.totals.prevUnits)}</td><td>${a.totals.sold.toLocaleString()}</td><td>${fmtUSD(a.totals.prevValue)}</td><td>${fmtUSD(a.totals.curValue)}</td>
+      <td>${signed(a.totals.curValue-a.totals.prevValue, fmtUSD)}</td><td>${a.totals.prevValue?signed(+(((a.totals.curValue-a.totals.prevValue)/a.totals.prevValue)*100).toFixed(1))+"%":"—"}</td></tr>
+    </tbody></table>`;
+}
+function countComparisonProductTableHtml(rows){
+  return `<table>
+    <thead><tr><th>Product</th><th>Category</th><th>Unit</th><th>Earlier Count</th><th>Received</th><th>Latest Count</th><th>Change</th><th>Units Sold*</th><th>Earlier Value</th><th>Latest Value</th><th>Value Change</th></tr></thead>
+    <tbody>${rows.length ? rows.map(r=>`<tr><td>${r.name}${cmpFlagPill(r)}</td><td>${r.category}</td><td>${r.unit}</td><td>${r.prev}</td><td>${r.received||""}</td><td>${r.cur}</td>
+      <td style="color:${chgColor(r.change)};font-weight:${r.change?700:400}">${signed(r.change)}</td><td style="color:${r.sold<0?'var(--red)':'inherit'}">${r.sold}</td>
+      <td>${fmtUSD(r.prevValue)}</td><td>${fmtUSD(r.curValue)}</td><td style="color:${chgColor(r.valueChange)}">${signed(r.valueChange, fmtUSD)}</td></tr>`).join("")
+      : `<tr><td colspan="11" style="text-align:center;color:var(--text-dim);">No products match these filters.</td></tr>`}
+    </tbody></table>`;
+}
+function renderCountComparison(el){
+  const reportKeys = inventoryReportKeysSorted();
+  const st = officeReportState;
+  if(!st.cmpInit){ const d = latestCountDefaults(reportKeys); st.cmpFrom = d.fromKey; st.cmpTo = d.toKey; st.cmpInit = true; }
+  if(st.cmpFrom && st.cmpFrom!=="live" && !DATA.inventoryReports[st.cmpFrom]) st.cmpFrom = "";
+  if(st.cmpTo && st.cmpTo!=="live" && !DATA.inventoryReports[st.cmpTo]) st.cmpTo = "live";
+  const a = countComparisonAnalysis(st.cmpFrom, st.cmpTo);
+  const catNames = a.catRows ? a.catRows.map(c=>c.category) : [];
+  const rows = a.error ? [] : countComparisonFilteredRows(a);
+  el.innerHTML = `
+    ${renderReportTypeTabsHtml()}
+    ${renderOfficeModeTabsHtml()}
+    <div class="note">Pick an earlier count and compare it to the most recent count, product by product. Received = what was invoiced between the two counts. *Units Sold = Earlier + Received − Latest. A red <b>check</b> tag means there's more on the shelf than the earlier count plus deliveries explains — usually a miscount or a missing invoice.</div>
+    <div class="card no-print">
+      <div class="form-grid" style="grid-template-columns:1fr 1fr;">
+        <div><label>Earlier count (compare from)</label><select id="cmpFrom">${countOptionsHtml(st.cmpFrom, false, true)}</select></div>
+        <div><label>Latest count (compare to)</label><select id="cmpTo">${countOptionsHtml(st.cmpTo, true, false)}</select></div>
+      </div>
+      ${reportKeys.length===0 ? `<div class="note" style="margin-top:10px;">No saved counts yet — after each count, save it under Inventory Snapshot (tab above) so you can compare against it later.</div>` : ``}
+    </div>
+    ${a.error ? `<div class="note">${a.error}</div>` : `
+    <div class="kpis">
+      <div class="kpi"><div class="lbl">Comparing</div><div class="val" style="font-size:14px;">${a.fromLabel} → ${a.toLabel}</div></div>
+      <div class="kpi"><div class="lbl">Earlier Value</div><div class="val">${fmtUSD0(a.totals.prevValue)}</div></div>
+      <div class="kpi"><div class="lbl">Latest Value</div><div class="val">${fmtUSD0(a.totals.curValue)}</div></div>
+      <div class="kpi"><div class="lbl">Value Change</div><div class="val" style="color:${chgColor(a.totals.curValue-a.totals.prevValue)}">${signed(a.totals.curValue-a.totals.prevValue, fmtUSD0)}</div></div>
+      <div class="kpi"><div class="lbl">Products Changed</div><div class="val">${a.totals.changed.toLocaleString()}</div><div class="sub">of ${a.rows.length.toLocaleString()}</div></div>
+    </div>
+    <div class="card">
+      <div class="flex" style="justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center;">
+        <h2 style="margin:0;">By Category</h2>
+        <div class="btnrow no-print">
+          <button class="btn small" id="cmpCsvBtn">⬇ Download CSV</button>
+          <button class="btn small primary" id="cmpPrintBtn">🖶 Print Comparison</button>
+        </div>
+      </div>
+      <div class="tablewrap" style="max-height:none;margin-top:8px;">${countComparisonCatTableHtml(a)}</div>
+    </div>
+    <div class="card">
+      <h2>By Product (${rows.length.toLocaleString()} shown)</h2>
+      <div class="form-grid no-print" style="grid-template-columns:2fr 1fr auto;align-items:end;">
+        <div><label>Search product</label><input id="cmpSearch" value="${(st.cmpSearch||"").replace(/"/g,'&quot;')}"></div>
+        <div><label>Category</label><select id="cmpCat"><option value="ALL">All Categories</option>${catNames.map(c=>`<option value="${c}" ${st.cmpCat===c?"selected":""}>${c}</option>`).join("")}</select></div>
+        <div><label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="cmpChanged" style="width:auto;" ${st.cmpChangedOnly?"checked":""}> Only products that changed</label></div>
+      </div>
+      <div class="tablewrap" id="cmpProducts">${countComparisonProductTableHtml(rows)}</div>
+    </div>`}
+  `;
+  wireReportTypeTabs();
+  wireOfficeModeTabs();
+  document.getElementById('cmpFrom').onchange = e=>{ st.cmpFrom = e.target.value; render(); };
+  document.getElementById('cmpTo').onchange = e=>{ st.cmpTo = e.target.value; render(); };
+  if(a.error) return;
+  const redrawProducts = ()=>{
+    const r = countComparisonFilteredRows(a);
+    document.getElementById('cmpProducts').innerHTML = countComparisonProductTableHtml(r);
+    const h = document.getElementById('cmpProducts').parentElement.querySelector('h2');
+    if(h) h.textContent = `By Product (${r.length.toLocaleString()} shown)`;
+  };
+  document.getElementById('cmpSearch').oninput = e=>{ st.cmpSearch = e.target.value; redrawProducts(); };
+  document.getElementById('cmpCat').onchange = e=>{ st.cmpCat = e.target.value; redrawProducts(); };
+  document.getElementById('cmpChanged').onchange = e=>{ st.cmpChangedOnly = e.target.checked; redrawProducts(); };
+  document.getElementById('cmpCsvBtn').onclick = ()=>downloadCountComparisonCSV(a);
+  document.getElementById('cmpPrintBtn').onclick = ()=>openCountComparisonPrintModal(a);
+}
+function openCountComparisonPrintModal(a){
+  const st = officeReportState;
+  const filtered = st.cmpCat!=="ALL" || st.cmpChangedOnly || st.cmpSearch;
+  const backdrop = document.createElement('div');
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal-card">
+      <h2>Print Count Comparison</h2>
+      <div class="sub">${a.fromLabel} → ${a.toLabel}</div>
+      <div class="modal-check-row"><input type="checkbox" id="ccpSummary" checked><label for="ccpSummary">Category Summary<span class="modal-check-sub">Units and value, earlier vs latest, by category</span></label></div>
+      <div class="modal-check-row"><input type="checkbox" id="ccpProducts" checked><label for="ccpProducts">Product Detail<span class="modal-check-sub">${filtered ? "Only the products matching your current filters" : "Every product"}</span></label></div>
+      <div class="modal-check-row"><input type="checkbox" id="ccpChangedOnly" ${st.cmpChangedOnly?"checked":""}><label for="ccpChangedOnly">Only products whose count changed<span class="modal-check-sub">Shorter printout</span></label></div>
+      <div class="modal-actions">
+        <button class="btn small" id="ccpCancel">Cancel</button>
+        <button class="btn small primary" id="ccpPrint">🖶 Print</button>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  const close = ()=>backdrop.remove();
+  backdrop.addEventListener('click', e=>{ if(e.target===backdrop) close(); });
+  document.getElementById('ccpCancel').onclick = close;
+  document.getElementById('ccpPrint').onclick = ()=>{
+    const includeSummary = document.getElementById('ccpSummary').checked;
+    const includeProducts = document.getElementById('ccpProducts').checked;
+    const changedOnly = document.getElementById('ccpChangedOnly').checked;
+    if(!includeSummary && !includeProducts){ toast("Pick at least one section to print", true); return; }
+    close();
+    let rows = countComparisonFilteredRows(a);
+    if(changedOnly) rows = rows.filter(r=>r.change!==0 || r.flag);
+    const main = document.getElementById('main');
+    main.innerHTML = `
+      <div class="printhead"><h1>⇄ Count Comparison — ${a.fromLabel} → ${a.toLabel}</h1>
+        <p>Printed ${new Date().toLocaleString()} — Earlier value ${fmtUSD(a.totals.prevValue)}, latest value ${fmtUSD(a.totals.curValue)}, change ${signed(a.totals.curValue-a.totals.prevValue, fmtUSD)}</p></div>
+      ${includeSummary ? `<div style="margin-bottom:18px;">${countComparisonCatTableHtml(a)}</div>` : ``}
+      ${includeProducts ? countComparisonProductTableHtml(rows) : ``}
+      <p style="font-size:11px;">*Units Sold = Earlier Count + Received − Latest Count.</p>`;
+    const restore = ()=>{ window.removeEventListener('afterprint', restore); render(); };
+    window.addEventListener('afterprint', restore);
+    setTimeout(()=>window.print(), 50);
+  };
+}
+function downloadCountComparisonCSV(a){
+  const out = [];
+  out.push([`Count Comparison - ${a.fromLabel} to ${a.toLabel}`]);
+  out.push([`Generated ${new Date().toLocaleString()}`]);
+  out.push([]);
+  out.push(["Category","Earlier Units","Received","Latest Units","Unit Change","Units Sold","Earlier Value","Latest Value","Value Change"]);
+  a.catRows.forEach(c=>out.push([c.category, c.prevUnits, c.received, c.curUnits, c.curUnits-c.prevUnits, c.sold, c.prevValue.toFixed(2), c.curValue.toFixed(2), (c.curValue-c.prevValue).toFixed(2)]));
+  out.push(["GRAND TOTAL", a.totals.prevUnits, a.totals.received, a.totals.curUnits, a.totals.curUnits-a.totals.prevUnits, a.totals.sold, a.totals.prevValue.toFixed(2), a.totals.curValue.toFixed(2), (a.totals.curValue-a.totals.prevValue).toFixed(2)]);
+  out.push([]);
+  out.push(["Product","Category","Unit","Earlier Count","Received","Latest Count","Change","Units Sold","Earlier Value","Latest Value","Value Change","Note"]);
+  countComparisonFilteredRows(a).forEach(r=>out.push([r.name, r.category, r.unit, r.prev, r.received, r.cur, r.change, r.sold, r.prevValue.toFixed(2), r.curValue.toFixed(2), r.valueChange.toFixed(2),
+    r.flag==="new"?"new since earlier count":r.flag==="gone"?"not in latest count":r.flag==="neg"?"check count / missing invoice":""]));
+  const name = `DJs_Mini_Mart_Count_Comparison_${(a.fromLabel||"").split(" —")[0]}_to_${(a.toLabel||"").split(" —")[0]}.csv`.replace(/[^\w.]+/g,"_");
+  downloadTextFile(name, out.map(r=>r.map(csvEscape).join(",")).join("\n"), "text/csv");
+  toast("Comparison downloaded");
+}
+
+/* ---- Print Inventory Snapshot (any saved count, or the current counts) ---- */
+function renderOfficeSnapshotPrint(el){
+  const st = officeReportState;
+  if(st.snapKey!=="live" && !DATA.inventoryReports[st.snapKey]) st.snapKey = "live";
+  const report = getInventoryReport(st.snapKey);
+  const cats = inventoryByCategoryCompute(report.products, p=>num(p.received_qty));
+  const totals = inventoryTotalsCompute(cats);
+  el.innerHTML = `
+    ${renderReportTypeTabsHtml()}
+    ${renderOfficeModeTabsHtml()}
+    <div class="note">Print (or download/email) a full inventory snapshot for the office — any saved count, or the current counts right now without saving a snapshot first.</div>
+    <div class="card">
+      <div class="form-grid" style="grid-template-columns:2fr auto;align-items:end;">
+        <div><label>Which count?</label><select id="snapKey">${countOptionsHtml(st.snapKey, true, false)}</select></div>
+        <div><button class="btn primary" id="snapPrintBtn">🖶 Print / Email / Download…</button></div>
+      </div>
+    </div>
+    <div class="kpis">
+      <div class="kpi"><div class="lbl">Products</div><div class="val">${report.products.length.toLocaleString()}</div></div>
+      <div class="kpi"><div class="lbl">Inventory Value (cost)</div><div class="val">${fmtUSD0(totals.closingValue)}</div></div>
+      <div class="kpi"><div class="lbl">Retail Value on Hand</div><div class="val">${fmtUSD0(totals.salesValue)}</div></div>
+      <div class="kpi"><div class="lbl">Units on Hand</div><div class="val">${totals.units.toLocaleString()}</div></div>
+    </div>
+  `;
+  wireReportTypeTabs();
+  wireOfficeModeTabs();
+  document.getElementById('snapKey').onchange = e=>{ st.snapKey = e.target.value; render(); };
+  document.getElementById('snapPrintBtn').onclick = ()=>openPrintOptionsModal([st.snapKey]);
 }
 
 /* ---------- Cigarette/Tobacco Unit Reconciliation (units, not dollars, Cigarettes/Tobacco only) ----------
@@ -3658,11 +4537,10 @@ function renderReceivedLog(el){
     const cost = parseFloat(document.getElementById('rlCost').value) || 0;
     const retail = parseFloat(document.getElementById('rlRetail').value) || 0;
     if(!name || !category){ toast("Enter at least a product name and category", true); return; }
-    const nextNum = Math.max(0, ...DATA.inventory.map(p=>p.num||0)) + 1;
-    DATA.inventory.push({num:nextNum, name, category, unit, par:0, closing:0, sold:0, cost, retail,
-      closing_value:0, sales_value:0, status:"\ud83d\udd34 OUT OF STOCK", opening:0, received_qty:0, notes:"",
-      buydown:0, multipack_qty:null, multipack_deal_price:null});
-    persist(); toast("Product added"); renderReceivedLog(el);
+    const dup = findProduct(name, unit);
+    if(dup){ toast(`"${dup.name}"${dup.unit?" ("+dup.unit+")":""} is already in the Product List under ${dup.category}`, true); return; }
+    const p = addProductRecord({name, category, unit, cost, retail});
+    persist(); toast(`Product added under ${p.category} \u2014 it's now in Product List, Inventory Count and the Count Sheet`); renderReceivedLog(el);
   };
   let rlSearch = "", rlCat = "ALL";
   const body = document.getElementById('rlBody');
@@ -3675,7 +4553,7 @@ function renderReceivedLog(el){
     }).forEach(p=>{
       const tr = document.createElement('tr');
       tr.innerHTML = `<td><input class="editable-cell" value="${p.name}" data-field="name" data-num="${p.num}" data-cat="${p.category}"></td>
-        <td>${p.category}</td>
+        <td>${p.category}${newBadge(p)}</td>
         <td><input class="editable-cell" value="${p.unit||""}" data-field="unit" data-num="${p.num}" data-cat="${p.category}"></td>
         <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(p.cost).toFixed(2)}" data-field="cost" data-num="${p.num}" data-cat="${p.category}"></div></td>
         <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${num(p.retail).toFixed(2)}" data-field="retail" data-num="${p.num}" data-cat="${p.category}"></div></td>
@@ -3778,13 +4656,15 @@ function openUnknownProductModal(pending, el){
   function renderStep1(){
     backdrop.innerHTML = `
       <div class="modal-card">
-        <h2>⚠️ Product Not Found</h2>
-        <div class="sub">"${pending.name}" doesn't match anything currently in the Product List. Is this a typo, or a new product?</div>
+        <h2>⚠️ ${pending.otherSizes && pending.otherSizes.length ? "New Size?" : "Product Not Found"}</h2>
+        <div class="sub">${pending.otherSizes && pending.otherSizes.length
+          ? `"${pending.name}" is in the Product List, but not in size "${pending.unit||"(blank)"}" — it's listed as: ${[...new Set(pending.otherSizes.map(p=>p.unit||"(blank)"))].join(", ")}. Is the size a typo, or is this a new size?`
+          : `"${pending.name}" doesn't match anything currently in the Product List. Is this a typo, or a new product?`}</div>
         <div class="modal-actions" style="justify-content:space-between;">
           <button class="btn small" id="upmCancel">Cancel</button>
           <div class="btnrow">
             <button class="btn small" id="upmTypo">It's a Typo</button>
-            <button class="btn small primary" id="upmNew">Add as New Product</button>
+            <button class="btn small primary" id="upmNew">${pending.otherSizes && pending.otherSizes.length ? "Add as New Size" : "Add as New Product"}</button>
           </div>
         </div>
       </div>`;
@@ -3825,10 +4705,10 @@ function openUnknownProductModal(pending, el){
       const p = ensureProduct(pending.name, category, unit, cost, retail);
       p.cost = cost; p.retail = retail;
       persist();
-      invoiceDraft.lines.push({name:pending.name, category, unit, cost, qty:pending.qty, discount:pending.discount,
+      invoiceDraft.lines.push({name:p.name, category:p.category, unit:p.unit||"", cost, qty:pending.qty, discount:pending.discount,
         total:+(cost*pending.qty-pending.discount).toFixed(2)});
       closeModal();
-      toast(`"${pending.name}" added as a new product and to this invoice`);
+      toast(`"${p.name}" added under ${p.category} (Product List, Inventory Count, Count Sheet) and to this invoice`);
       renderInvoiceEntry(el);
     };
   }
@@ -3898,12 +4778,18 @@ function renderInvoiceEntry(el){
     </div>
   `;
 
-  function fillFromNameAndUnit(){
+  function fillFromNameAndUnit(e){
     const name = document.getElementById('ieName').value.trim();
     const unit = document.getElementById('ieUnit').value.trim();
-    const matches = DATA.inventory.filter(x=>x.name===name);
+    const matches = DATA.inventory.filter(x=>normName(x.name)===normName(name));
     if(!matches.length) return;
     document.getElementById('ieUnitList').innerHTML = matches.map(m=>`<option value="${m.unit||""}">`).join("");
+    const unitTyped = e && e.target && e.target.id==="ieUnit";
+    if(unitTyped && unit && !matches.some(m=>normUnit(m.unit)===normUnit(unit))){
+      // a size that isn't in the Product List yet -- keep what they typed; Add Line will offer to add it
+      document.getElementById('ieCategory').value = matches[0].category || "";
+      return;
+    }
     if(matches.length===1){
       const p = matches[0];
       document.getElementById('ieCategory').value = p.category || "";
@@ -3912,7 +4798,7 @@ function renderInvoiceEntry(el){
       return;
     }
     // Multiple sizes exist for this product name -- try to match the chosen unit exactly.
-    const exact = matches.find(m=>(m.unit||"")===unit);
+    const exact = matches.find(m=>normUnit(m.unit)===normUnit(unit));
     if(exact){
       document.getElementById('ieCategory').value = exact.category || "";
       document.getElementById('ieCost').value = num(exact.cost).toFixed(2);
@@ -3959,12 +4845,16 @@ function renderInvoiceEntry(el){
     const qty = parseFloat(document.getElementById('ieQty').value)||0;
     const discount = Math.abs(parseFloat(document.getElementById('ieDiscount').value)||0);
     if(!name || !qty){ toast("Enter a product name and quantity", true); return; }
-    const knownProduct = DATA.inventory.some(p=>normName(p.name)===normName(name));
-    if(!knownProduct){
-      openUnknownProductModal({name, category, unit, cost, qty, discount}, el);
+    // Match on name AND size -- a known name in a size that isn't in the Product List yet is a new product
+    // too (otherwise its received qty never shows up anywhere in Inventory Count).
+    const match = findProduct(name, unit, category);
+    if(!match){
+      const otherSizes = DATA.inventory.filter(p=>normName(p.name)===normName(name));
+      openUnknownProductModal({name, category: category || (otherSizes[0] ? otherSizes[0].category : ""), unit, cost, qty, discount, otherSizes}, el);
       return;
     }
-    invoiceDraft.lines.push({name, category, unit, cost, qty, discount, total:+(cost*qty-discount).toFixed(2)});
+    // Store the line with the Product List's own spelling/category/size so it always matches that product.
+    invoiceDraft.lines.push({name:match.name, category:match.category, unit:match.unit||"", cost, qty, discount, total:+(cost*qty-discount).toFixed(2)});
     renderInvoiceEntry(el);
   };
   document.getElementById('ieDraftBody').querySelectorAll('[data-line]').forEach(b=>{
@@ -4001,9 +4891,9 @@ function renderInvoiceEntry(el){
       DATA.invoiceEntries = DATA.invoiceEntries.filter(e=>e.invoice!==reopenedFrom);
     }
     invoiceDraft.lines.forEach(l=>{
-      DATA.invoiceEntries.unshift({name:l.name, category:l.category, unit:l.unit||"", cost:l.cost, qty:l.qty,
-        discount:num(l.discount), total:num(l.total), distributor, invoice, date, notes:"", reconciled:!!l.reconciled});
       const p = ensureProduct(l.name, l.category, l.unit, l.cost, 0);
+      DATA.invoiceEntries.unshift({name:p.name, category:p.category, unit:p.unit||"", cost:l.cost, qty:l.qty,
+        discount:num(l.discount), total:num(l.total), distributor, invoice, date, notes:"", reconciled:!!l.reconciled});
       if(l.cost) p.cost = l.cost;
       // Discount is a one-time reduction for this delivery only -- product's normal cost is never touched by it.
     });
@@ -4237,7 +5127,8 @@ function renderInvoiceLog(el){
       if(!line) return;
       if(field==="name" || field==="category" || field==="unit"){
         line[field] = inp.value;
-        ensureProduct(line.name, line.category, line.unit, line.cost, 0);
+        const p = ensureProduct(line.name, line.category, line.unit, line.cost, 0);
+        line.category = p.category;
       } else {
         line[field] = field==="discount" ? Math.abs(parseFloat(inp.value)||0) : (parseFloat(inp.value)||0);
         if(field==="cost" || field==="qty" || field==="discount") line.total = +(num(line.cost)*num(line.qty)-num(line.discount)).toFixed(2);
@@ -4318,7 +5209,7 @@ function renderProductList(el){
       const marginPct = retail ? marginDollar/retail : 0;
       const tr = document.createElement('tr');
       if(st!=="OK") tr.classList.add('lowstock-row');
-      tr.innerHTML = `<td>${p.num}</td><td>${p.name}</td><td>${p.category}</td><td>${p.unit||""}</td><td>${p.par}</td>
+      tr.innerHTML = `<td>${p.num}</td><td>${p.name}${newBadge(p)}</td><td>${p.category}</td><td>${p.unit||""}</td><td>${p.par}</td>
         <td>${p.closing}</td><td>${fmtUSD(cost)}</td><td>${fmtUSD(retail)}</td>
         <td style="color:${marginDollar<0?'var(--red)':'inherit'}">${fmtUSD(marginDollar)}</td>
         <td style="color:${marginPct<0?'var(--red)':'inherit'}">${fmtPct(marginPct)}</td>
@@ -4506,7 +5397,7 @@ function renderInventoryCount(el){
       const totalAvail = num(p.opening)+received;
       const sold = totalAvail - num(p.closing);
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${p.name}</td><td>${p.unit||""}</td><td>${p.par}</td>
+      tr.innerHTML = `<td>${p.name}${newBadge(p)}</td><td>${p.unit||""}</td><td>${p.par}</td>
         <td><input class="editable-cell" type="number" value="${p.opening??0}" data-field="opening" data-num="${p.num}" data-cat="${p.category}" style="width:60px"></td>
         <td><button class="btn small icRollOne" type="button" data-num="${p.num}" data-cat="${p.category}" title="Copy this row's Closing into Opening">\u21bb</button></td>
         <td>${received}</td><td>${totalAvail}</td>
@@ -4624,7 +5515,7 @@ function renderMonthlyReports(el){
   const curKey = monthEndKey(curYear, curMonth);
   const already = !!DATA.inventoryReports[curKey];
   const years = Object.keys(DATA.overlooks).sort();
-  const reportKeys = Object.keys(DATA.inventoryReports).sort().reverse();
+  const reportKeys = inventoryReportKeysSorted().reverse(); // newest month first (was alphabetical)
   const checkedKeys = reportKeys.filter(k=>monthlyReportsState.checked[k]);
   const fy = currentFiscalYear(today);
   const curFQ = currentFiscalQuarter(today);
@@ -4765,7 +5656,7 @@ function printMonthlyReports(keys, options){
   const main = document.getElementById('main');
   const sorted = keys.slice().sort(); // chronological order for multi-report printouts
   main.innerHTML = sorted.map((key, i)=>{
-    const report = DATA.inventoryReports[key];
+    const report = getInventoryReport(key);
     const cats = inventoryByCategoryCompute(report.products, p=>num(p.received_qty));
     const catNames = Object.keys(cats).sort();
     const totals = inventoryTotalsCompute(cats);
@@ -4827,7 +5718,7 @@ function downloadTextFile(filename, content, mime){
 function monthlyReportsFileName(keys){
   const sorted = keys.slice().sort();
   const label = sorted.length===1
-    ? (()=>{ const r=DATA.inventoryReports[sorted[0]]; return r ? `${r.month}_${r.year}` : "Report"; })()
+    ? (()=>{ const r=getInventoryReport(sorted[0]); return r ? `${r.month}_${r.year}` : "Report"; })()
     : `${sorted.length}_Reports`;
   return `DJs_Mini_Mart_${label}.csv`.replace(/\s+/g,"_");
 }
@@ -4837,7 +5728,7 @@ function monthlyReportsToCSV(keys, options){
   const sorted = keys.slice().sort();
   const rows = [];
   sorted.forEach(key=>{
-    const report = DATA.inventoryReports[key];
+    const report = getInventoryReport(key);
     const cats = inventoryByCategoryCompute(report.products, p=>num(p.received_qty));
     const catNames = Object.keys(cats).sort();
     const totals = inventoryTotalsCompute(cats);
@@ -4884,13 +5775,13 @@ function emailMonthlyReports(keys, options){
   const sorted = keys.slice().sort();
   downloadMonthlyReportsFile(sorted, opts);
   const subjectLabel = sorted.length===1
-    ? (()=>{ const r=DATA.inventoryReports[sorted[0]]; return r ? `${r.month} ${r.year} Inventory Report` : "Inventory Report"; })()
+    ? (()=>{ const r=getInventoryReport(sorted[0]); return r ? `${r.month} ${r.year} Inventory Report` : "Inventory Report"; })()
     : `${sorted.length} Inventory Reports`;
   const lines = [];
   lines.push(`The full ${subjectLabel} is attached as a CSV file \u2014 it was just downloaded to your computer (check your Downloads folder) and needs to be attached to this email before sending.`);
   lines.push("");
   sorted.forEach(key=>{
-    const report = DATA.inventoryReports[key];
+    const report = getInventoryReport(key);
     if(opts.includeSummary){
       const cats = inventoryByCategoryCompute(report.products, p=>num(p.received_qty));
       const totals = inventoryTotalsCompute(cats);
@@ -4908,7 +5799,7 @@ function emailMonthlyReports(keys, options){
 function openPrintOptionsModal(keys){
   if(!keys.length) return;
   const label = keys.length===1
-    ? (()=>{ const r = DATA.inventoryReports[keys[0]]; return r ? `${r.month} ${r.year}` : "this report"; })()
+    ? (()=>{ const r = getInventoryReport(keys[0]); return r ? `${r.month} ${r.year}` : "this report"; })()
     : `${keys.length} reports`;
   const backdrop = document.createElement('div');
   backdrop.className = "modal-backdrop";
@@ -5401,7 +6292,7 @@ function renderCountSheet(el){
         <h2>${c}</h2>
         <div class="tablewrap" style="max-height:none"><table>
           <thead><tr><th>Product</th><th>Unit</th><th>Par</th><th style="width:120px">Count</th></tr></thead>
-          <tbody>${cats[c].map(p=>`<tr><td>${p.name}</td><td>${p.unit||""}</td><td>${p.par}</td><td>&nbsp;</td></tr>`).join("")}</tbody>
+          <tbody>${cats[c].map(p=>`<tr><td>${p.name}${isNewProduct(p)?' <b>(NEW)</b>':''}</td><td>${p.unit||""}</td><td>${p.par}</td><td>&nbsp;</td></tr>`).join("")}</tbody>
         </table></div>
       </div>`).join("")}
     </div>
@@ -6332,7 +7223,7 @@ function renderStationOperations(main){
 
 function renderDataMgmt(main){
   main.innerHTML = `
-    <div class="topbar"><div><h1>Backup &amp; Restore</h1><p>Your data is saved automatically in this browser. Export a backup regularly.</p></div></div>
+    <div class="topbar"><div><h1>Backup &amp; Restore</h1><p>Your data is saved automatically and shared with everyone through the cloud. Export a backup regularly.</p></div></div>
     <div class="card">
       <h2>Export Backup</h2>
       <div class="sub">Downloads everything \u2014 sales, invoices, rebates, and inventory \u2014 as a single JSON file.</div>
@@ -6365,24 +7256,34 @@ function renderDataMgmt(main){
       try{
         const parsed = JSON.parse(reader.result);
         if(!parsed.overlooks || !parsed.inventory) throw new Error("bad format");
-        DATA = parsed; persist(); toast("Restored from backup"); render();
+        migrate(parsed); DATA = parsed; forceNextSave = true; persist(); toast("Restored from backup"); render();
       }catch(err){ toast("That file doesn't look like a valid backup", true); }
     };
     reader.readAsText(file);
   };
   document.getElementById('resetBtn').onclick = ()=>{
     if(!confirm("This will erase all changes and restore the original data. Continue?")) return;
-    DATA = JSON.parse(JSON.stringify(SEED));
+    DATA = JSON.parse(JSON.stringify(SEED)); migrate(DATA); forceNextSave = true;
     persist(); toast("Reset complete"); render();
   };
 }
 
 /* ===================== INIT ===================== */
 (async function initApp(){
+  // 1) show this device's copy right away
+  try{
+    const st = await IDB.get("state");
+    if(st && st.data){
+      DATA = st.data; LOCAL_IS_FRESH = false;
+      if(st.base && st.base.hashes) syncBase = st.base;
+    }
+  }catch(e){ console.warn("IndexedDB read failed -- using browser storage copy", e); }
+  migrate(DATA);
+  DATA_VERSION++;
   updateSyncBadge();
-  const connected = await cloudLoadInitial();
   render();
-  if(connected) startCloudListener();
+  // 2) then reconcile with the shared cloud copy (pull teammates' changes, push anything not yet uploaded)
+  await connectCloud();
 })();
 
 </script>
