@@ -2743,12 +2743,13 @@ function snapshotProductMap(products){
 function distributorNamesKnown(){
   return [...new Set(DATA.invoiceEntries.map(e=>(e.distributor||"").trim()).filter(Boolean))].sort();
 }
+function localTodayStr(){ const d=new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,'0')+"-"+String(d.getDate()).padStart(2,'0'); }
 function periodBounds(fromKey, toKey){
   const fromReport = fromKey && DATA.inventoryReports[fromKey] ? DATA.inventoryReports[fromKey] : null;
   const toIsLive = !toKey || toKey==="live";
   const toReport = !toIsLive && DATA.inventoryReports[toKey] ? DATA.inventoryReports[toKey] : null;
   const fromDate = fromReport ? inventoryReportAsOfDate(fromKey) : "";
-  const toDate = toReport ? inventoryReportAsOfDate(toKey) : new Date().toISOString().slice(0,10);
+  const toDate = toReport ? inventoryReportAsOfDate(toKey) : localTodayStr();
   return {
     fromDate, toDate,
     fromProducts: fromReport ? fromReport.products : null,
@@ -2969,49 +2970,84 @@ function categoryForInvoiceEntry(e){
   if(master && master.category) return master.category;
   return (e.category||"Uncategorized").toUpperCase();
 }
+/* Inside-store register sales between two counts: Total Collected minus Gas for every day AFTER
+   fromDate up to and including toDate (the starting count already reflects its own day's sales). */
+function insideSalesInRange(fromDate, toDate){
+  let collected = 0, gas = 0, days = 0;
+  Object.keys(DATA.overlooks).forEach(y=>{
+    const yNum = parseInt(y);
+    if(!yNum || !DATA.overlooks[y]) return;
+    MONTHS.forEach((mo,mIdx)=>{
+      const md = DATA.overlooks[y][mo];
+      if(!md || !md.daily) return;
+      md.daily.forEach(d=>{
+        if(typeof d.store !== "number") return;
+        const dateStr = yNum + "-" + String(mIdx+1).padStart(2,'0') + "-" + String(d.day).padStart(2,'0');
+        if(fromDate && dateStr <= fromDate) return;
+        if(toDate && dateStr > toDate) return;
+        collected += d.store; gas += num(d.gas); days++;
+      });
+    });
+  });
+  let windowDays = 0;
+  if(fromDate && toDate) windowDays = Math.max(0, Math.round((new Date(toDate+"T00:00:00") - new Date(fromDate+"T00:00:00"))/86400000));
+  return {inside: collected-gas, collected, gas, days, windowDays};
+}
+const OFFICE_SHRINK_WARN = 0.03; // unaccounted product above 3% of inside sales is worth a look
+/* Shrink Check (v2). Per category: Beginning inventory + Purchases - Actual count = cost of product
+   that left the shelf. The same movement priced at retail is what the register SHOULD have rung up;
+   comparing that to the inside sales actually entered in Sales & Margins (Total Collected - Gas)
+   gives one store-wide unaccounted figure. The register figures are store-wide, so the gap can't be
+   split by category -- the category table shows where product is moving and at what margin. */
 function officeReportAnalysis(fromKey, toKey){
   const pb = periodBounds(fromKey, toKey);
   if(!pb.fromProducts) return {rows:[], totals:null, fromLabel:pb.fromLabel, toLabel:pb.toLabel, error:"Pick a starting count (the beginning of the period) above — e.g. your July count."};
-  const fromCats = inventoryByCategoryCompute(pb.fromProducts, p=>num(p.received_qty));
-  const toCats = inventoryByCategoryCompute(pb.toProducts, p=>num(p.received_qty));
-  const entries = DATA.invoiceEntries.filter(e=>{
-    const d = (e.date||"").slice(0,10);
-    if(!d) return false;
-    if(pb.fromDate && d < pb.fromDate) return false;
-    if(pb.toDate && d > pb.toDate) return false;
-    return true;
-  });
+  const cmp = countComparisonAnalysis(fromKey, toKey);
+  const up = c=>String(c||"Uncategorized").toUpperCase();
+  const keyOf = p=>normName(p.name)+"||"+normUnit(p.unit);
+  const known = new Set([...pb.fromProducts.map(keyOf), ...pb.toProducts.map(keyOf)]);
   const purchasesByCat = {};
-  entries.forEach(e=>{
-    const c = categoryForInvoiceEntry(e);
+  let unmatchedPurchases = 0, unmatchedLines = 0;
+  DATA.invoiceEntries.forEach(e=>{
+    const d = (e.date||"").slice(0,10);
+    if(!d) return;
+    if(pb.fromDate && d <= pb.fromDate) return;
+    if(pb.toDate && d > pb.toDate) return;
+    const c = up(categoryForInvoiceEntry(e));
     if(!purchasesByCat[c]) purchasesByCat[c] = {purchases:0, units:0};
     purchasesByCat[c].purchases += num(e.total);
     purchasesByCat[c].units += num(e.qty);
+    if(!known.has(keyOf(e))){ unmatchedPurchases += num(e.total); unmatchedLines++; }
   });
-  const catNames = new Set([...Object.keys(fromCats), ...Object.keys(toCats), ...Object.keys(purchasesByCat)]);
+  const cmpCats = {}; cmp.catRows.forEach(c=>cmpCats[c.category]=c);
+  const catNames = new Set([...Object.keys(cmpCats), ...Object.keys(purchasesByCat)]);
   const rows = [...catNames].sort().map(c=>{
-    const beginningBook = fromCats[c] ? fromCats[c].closingValue : 0;
+    const beginning = cmpCats[c] ? cmpCats[c].prevValue : 0;
+    const actual = cmpCats[c] ? cmpCats[c].curValue : 0;
     const purchases = purchasesByCat[c] ? purchasesByCat[c].purchases : 0;
     const unitsPurchased = purchasesByCat[c] ? purchasesByCat[c].units : 0;
-    // Weighted average -- purchases $ / units purchased. Mainly informational (Purchases above is
-    // already the literal $ invoiced), but surfaces exactly the kind of mid-period cost movement
-    // that's easy to miss category-by-category -- especially Cigarettes/Tobacco, where buydowns and
-    // list-price changes happen often. See the Price History tab for the same idea per-product.
-    const avgCost = unitsPurchased>0 ? purchases/unitsPurchased : 0;
-    const endingBook = beginningBook + purchases;
-    const physicalCount = toCats[c] ? toCats[c].closingValue : 0;
-    const variance = physicalCount - endingBook;
-    const variancePct = endingBook>0 ? variance/endingBook : (physicalCount>0 ? 1 : 0);
-    return {category:c, beginningBook, purchases, unitsPurchased, avgCost, endingBook, physicalCount, variance, variancePct};
+    const leftCost = beginning + purchases - actual;
+    const leftRetail = cmpCats[c] ? cmpCats[c].soldRetail : 0;
+    const margin = leftRetail>0 ? 1 - leftCost/leftRetail : null;
+    return {category:c, beginning, purchases, unitsPurchased, actual, leftCost, leftRetail, margin};
   });
   const totals = rows.reduce((t,r)=>{
-    t.beginningBook+=r.beginningBook; t.purchases+=r.purchases; t.unitsPurchased+=r.unitsPurchased;
-    t.endingBook+=r.endingBook; t.physicalCount+=r.physicalCount; t.variance+=r.variance;
+    ["beginning","purchases","unitsPurchased","actual","leftCost","leftRetail"].forEach(f=>t[f]+=r[f]);
     return t;
-  }, {beginningBook:0, purchases:0, unitsPurchased:0, endingBook:0, physicalCount:0, variance:0});
-  totals.avgCost = totals.unitsPurchased>0 ? totals.purchases/totals.unitsPurchased : 0;
-  totals.variancePct = totals.endingBook>0 ? totals.variance/totals.endingBook : 0;
-  return {rows, totals, fromLabel:pb.fromLabel, toLabel:pb.toLabel, fromDate:pb.fromDate, toDate:pb.toDate};
+  }, {beginning:0, purchases:0, unitsPurchased:0, actual:0, leftCost:0, leftRetail:0});
+  totals.margin = totals.leftRetail>0 ? 1 - totals.leftCost/totals.leftRetail : null;
+  rows.forEach(r=>{ r.share = totals.leftRetail>0 ? r.leftRetail/totals.leftRetail : 0; });
+  const register = insideSalesInRange(pb.fromDate, pb.toDate);
+  totals.registerInside = register.inside;
+  totals.registerDays = register.days;
+  totals.windowDays = register.windowDays;
+  totals.shrinkRetail = totals.leftRetail - register.inside;
+  totals.shrinkPct = register.inside>0 ? totals.shrinkRetail/register.inside : null;
+  totals.shrinkCost = totals.leftRetail>0 ? totals.shrinkRetail * (totals.leftCost/totals.leftRetail) : 0;
+  totals.unmatchedPurchases = unmatchedPurchases;
+  totals.unmatchedLines = unmatchedLines;
+  totals.variance = -totals.shrinkRetail; // keeps the Saved Office Reports list working (negative = loss)
+  return {v:2, rows, totals, fromLabel:pb.fromLabel, toLabel:pb.toLabel, fromDate:pb.fromDate, toDate:pb.toDate};
 }
 /* Freezes the current analysis into DATA.officeReports, same idea as generateDistributorReport(). */
 function generateOfficeReport(fromKey, toKey){
@@ -3019,7 +3055,7 @@ function generateOfficeReport(fromKey, toKey){
   if(analysis.error) return {error: analysis.error};
   const id = "or_" + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
   DATA.officeReports[id] = {
-    id, generatedAt: new Date().toISOString(),
+    id, v:2, generatedAt: new Date().toISOString(),
     fromKey, toKey, fromLabel: analysis.fromLabel, toLabel: analysis.toLabel,
     fromDate: analysis.fromDate, toDate: analysis.toDate,
     rows: analysis.rows, totals: analysis.totals
@@ -3027,8 +3063,79 @@ function generateOfficeReport(fromKey, toKey){
   persist();
   return DATA.officeReports[id];
 }
+/* Plain-text pieces of a report, shared by screen warnings, Print, CSV and Email. Handles both the
+   new Shrink Check reports (v:2) and older saved Book-vs-Physical reports. */
+function officeReportWarnings(t){
+  const w = [];
+  if(t.windowDays && t.registerDays < t.windowDays) w.push(`Only ${t.registerDays} of ${t.windowDays} days in this window have a daily total entered in Sales & Margins — missing days make the unaccounted figure look bigger than it is.`);
+  if(!t.registerDays) w.push(`No daily totals are entered for this window, so there is nothing to compare against yet.`);
+  if(t.unmatchedLines) w.push(`${t.unmatchedLines} invoice line(s) totalling ${fmtUSD(t.unmatchedPurchases)} don't match any product in either count (name + unit) — their cost is included but their retail value isn't, which understates what should have been rung up.`);
+  if(t.registerDays && t.shrinkRetail < 0) w.push(`The register rang up more than the product that left the shelf. Usually a missing invoice, an ending count that's too high, or daily totals that include things not in inventory (sales tax, lottery, money orders).`);
+  return w;
+}
+function officeReportPlain(report){
+  const t = report.totals;
+  const sg = (v,f)=>(v>=0?"+":"")+f(v);
+  if(report.v!==2){
+    return {
+      summary: [["Beginning Book",fmtUSD(t.beginningBook)],["Purchases",fmtUSD(t.purchases)],["Ending Book",fmtUSD(t.endingBook)],["Physical Count",fmtUSD(t.physicalCount)],["Variance",sg(t.variance,fmtUSD)],["Variance %",(t.variancePct*100).toFixed(1)+"%"]],
+      headers: ["Category","Beginning Book","Purchases","Units Purchased","Average Cost","Ending Book","Physical Count","Variance","Variance %"],
+      body: report.rows.map(r=>[r.category,fmtUSD(r.beginningBook),fmtUSD(r.purchases),r.unitsPurchased,r.unitsPurchased?fmtUSD(r.avgCost):"—",fmtUSD(r.endingBook),fmtUSD(r.physicalCount),sg(r.variance,fmtUSD),(r.variancePct*100).toFixed(1)+"%"]),
+      total: ["GRAND TOTAL",fmtUSD(t.beginningBook),fmtUSD(t.purchases),t.unitsPurchased,t.unitsPurchased?fmtUSD(t.avgCost):"—",fmtUSD(t.endingBook),fmtUSD(t.physicalCount),sg(t.variance,fmtUSD),(t.variancePct*100).toFixed(1)+"%"],
+      warnings: ["Older report: generated before sales were included, so Variance here is mostly product that was sold, not shrink. Generate a new report for this window."]
+    };
+  }
+  const pct = v=>v===null||v===undefined ? "—" : (v*100).toFixed(1)+"%";
+  return {
+    summary: [["Product that left the shelf (at retail)",fmtUSD(t.leftRetail)],["Register inside sales (Total Collected − Gas)",`${fmtUSD(t.registerInside)} — ${t.registerDays} of ${t.windowDays} days entered`],["Unaccounted (at retail)",`${fmtUSD(t.shrinkRetail)} (${pct(t.shrinkPct)} of inside sales)`],["Unaccounted (approx. at cost)",fmtUSD(t.shrinkCost)],["Beginning inventory",fmtUSD(t.beginning)],["Purchases",fmtUSD(t.purchases)],["Actual count",fmtUSD(t.actual)],["Margin on what left the shelf",pct(t.margin)]],
+    headers: ["Category","Beginning Inventory","Purchases","Actual Count","Left the Shelf (cost)","Left the Shelf (retail)","Margin","Share of Sales"],
+    body: report.rows.map(r=>[r.category,fmtUSD(r.beginning),fmtUSD(r.purchases),fmtUSD(r.actual),fmtUSD(r.leftCost),fmtUSD(r.leftRetail),pct(r.margin),pct(r.share)]),
+    total: ["GRAND TOTAL",fmtUSD(t.beginning),fmtUSD(t.purchases),fmtUSD(t.actual),fmtUSD(t.leftCost),fmtUSD(t.leftRetail),pct(t.margin),"100.0%"],
+    warnings: officeReportWarnings(t)
+  };
+}
+function renderOfficeShrinkResults(analysis, opts){
+  const showGenerate = !opts || opts.showGenerate!==false;
+  const rows = analysis.rows, t = analysis.totals;
+  const pct = v=>v===null||v===undefined ? "—" : (v*100).toFixed(1)+"%";
+  const over = t.shrinkPct!==null && t.shrinkPct>OFFICE_SHRINK_WARN;
+  const shrinkColor = !t.registerDays ? 'inherit' : (t.shrinkRetail<0 ? '#8a6d00' : (over ? 'var(--red)' : 'var(--green)'));
+  const warnings = officeReportWarnings(t);
+  return `
+    <div class="kpis">
+      <div class="kpi"><div class="lbl">Window</div><div class="val" style="font-size:15px;">${analysis.fromLabel||"—"} → ${analysis.toLabel}</div></div>
+      <div class="kpi"><div class="lbl">Left the Shelf (at retail)</div><div class="val">${fmtUSD0(t.leftRetail)}</div><div class="sub">what should have been rung up</div></div>
+      <div class="kpi"><div class="lbl">Register Inside Sales</div><div class="val">${fmtUSD0(t.registerInside)}</div><div class="sub">${t.registerDays} of ${t.windowDays} days entered</div></div>
+      <div class="kpi"><div class="lbl">Unaccounted</div><div class="val" style="color:${shrinkColor}">${fmtUSD0(t.shrinkRetail)}</div><div class="sub">${pct(t.shrinkPct)} of inside sales · about ${fmtUSD0(t.shrinkCost)} at cost</div></div>
+      <div class="kpi"><div class="lbl">Margin on What Left</div><div class="val">${pct(t.margin)}</div></div>
+    </div>
+    ${warnings.map(w=>`<div class="note" style="border-left:4px solid #d9a400;">⚠️ ${w}</div>`).join("")}
+    <div class="card">
+      <div class="flex" style="justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center;">
+        <h2 style="margin:0;">Shrink Check — ${analysis.fromLabel||"?"} → ${analysis.toLabel}</h2>
+        ${showGenerate ? `<button class="btn primary no-print" id="orGenerateBtn" ${rows.length?"":"disabled"}>📄 Generate Report</button>` : ``}
+      </div>
+      <div class="note" style="margin-top:0;">Beginning Inventory + Purchases − Actual Count = the cost of product that left the shelf. Priced at retail, that is what the register should have rung up. Unaccounted = that retail figure − the inside sales you entered in Sales &amp; Margins (Total Collected − Gas). A positive number is product that left without being rung up (theft, waste, miscounts, giveaways); over ${(OFFICE_SHRINK_WARN*100).toFixed(0)}% of sales shows red. The daily totals are store-wide, so the gap can't be split by category — the table shows where product is moving and at what margin.</div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Category</th><th>Beginning Inventory</th><th>Purchases</th><th>Actual Count</th><th>Left the Shelf (cost)</th><th>Left the Shelf (retail)</th><th>Margin</th><th>Share of Sales</th></tr></thead>
+        <tbody>${rows.length ? rows.map(r=>`<tr>
+          <td>${r.category}${r.leftCost<0?` <span class="pill bad" title="More on the shelf than beginning + purchases explains — check the count or look for a missing invoice">check</span>`:""}</td>
+          <td>${fmtUSD(r.beginning)}</td><td>${fmtUSD(r.purchases)}</td><td>${fmtUSD(r.actual)}</td>
+          <td style="color:${r.leftCost<0?'var(--red)':'inherit'}">${fmtUSD(r.leftCost)}</td>
+          <td>${fmtUSD(r.leftRetail)}</td><td>${pct(r.margin)}</td><td>${pct(r.share)}</td>
+        </tr>`).join("") : `<tr><td colspan="8" style="color:var(--text-dim);text-align:center;">No categories to show for this window.</td></tr>`}
+        <tr class="total"><td>GRAND TOTAL</td><td>${fmtUSD(t.beginning)}</td><td>${fmtUSD(t.purchases)}</td><td>${fmtUSD(t.actual)}</td><td>${fmtUSD(t.leftCost)}</td><td>${fmtUSD(t.leftRetail)}</td><td>${pct(t.margin)}</td><td>100.0%</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  `;
+}
 /* Shared results view -- used live (tab + Monthly Reports generator) and for a frozen saved report. */
 function renderOfficeReportResults(analysis, opts){
+  if(analysis.v===2) return renderOfficeShrinkResults(analysis, opts);
+  return `<div class="note" style="border-left:4px solid #d9a400;">⚠️ Older report: generated before sales were included, so Variance here is mostly product that was sold, not shrink. Generate a new report for this window.</div>` + renderOfficeReportResultsLegacy(analysis, opts);
+}
+function renderOfficeReportResultsLegacy(analysis, opts){
   const showGenerate = !opts || opts.showGenerate!==false;
   const rows = analysis.rows;
   const totals = analysis.totals;
@@ -3081,16 +3188,16 @@ function renderOfficeReportsHome(el){
   el.innerHTML = `
     ${renderReportTypeTabsHtml()}
     ${renderOfficeModeTabsHtml()}
-    <div class="note">Book-to-physical reconciliation by category: Beginning Book (last count) + Purchases (invoiced during the window) = Ending Book, compared against the Physical Count (the new count) to surface shrinkage or overage. Most useful right after you complete a new count — e.g. July → September.</div>
+    <div class="note">Compares the product that left the shelf between two counts against the inside sales you entered each day in Sales &amp; Margins, to show how much product is unaccounted for. Most useful right after you complete a new count — e.g. July → September — and once every day in the window has a daily total entered.</div>
     <div class="card">
       <h2>Generate an Office Report</h2>
       <div class="sub">Freezes this analysis so it stays put even if counts or invoices change later. "To" always uses whatever count you pick — including Live, if you haven't generated this period's snapshot yet.</div>
       <div class="form-grid" style="grid-template-columns:1fr 1fr;">
-        <div><label>From (starting count — Beginning Book)</label><select id="orhFrom">
+        <div><label>From (starting count)</label><select id="orhFrom">
           <option value="">— pick a saved count —</option>
           ${reportKeys.map(k=>`<option value="${k}" ${officeReportState.fromKey===k?"selected":""}>${inventoryReportLabel(k)}</option>`).join("")}
         </select></div>
-        <div><label>To (ending count — Physical Count)</label><select id="orhTo">
+        <div><label>To (ending count)</label><select id="orhTo">
           <option value="live" ${officeReportState.toKey==="live"?"selected":""}>Most Recent Count — current counts (today)</option>
           ${reportKeys.map(k=>`<option value="${k}" ${officeReportState.toKey===k?"selected":""}>${inventoryReportLabel(k)}</option>`).join("")}
         </select></div>
@@ -3102,7 +3209,7 @@ function renderOfficeReportsHome(el){
       <h2>Saved Office Reports (${savedIds.length})</h2>
       ${savedIds.length ? `
       <div class="tablewrap"><table>
-        <thead><tr><th>Window</th><th>Generated</th><th>Variance</th><th></th></tr></thead>
+        <thead><tr><th>Window</th><th>Generated</th><th>Unaccounted / Variance</th><th></th></tr></thead>
         <tbody>
           ${savedIds.map(id=>{
             const r = DATA.officeReports[id];
@@ -3160,7 +3267,7 @@ function renderOfficeReportDetail(el, id){
     <div class="card">
       <h2>Office Report — ${report.fromLabel||"?"} → ${report.toLabel}</h2>
     </div>
-    ${renderOfficeReportResults({rows:report.rows, totals:report.totals, fromLabel:report.fromLabel, toLabel:report.toLabel}, {showGenerate:false})}
+    ${renderOfficeReportResults(report, {showGenerate:false})}
   `;
   document.getElementById('backToOfficeReports').onclick = ()=>{ monthlyReportsState.selectedOfficeReportId = null; render(); };
   document.getElementById('printThisOfficeReportBtn').onclick = ()=>{ printOfficeReports([id]); };
@@ -3173,19 +3280,19 @@ function printOfficeReports(ids){
   const sorted = ids.slice().sort();
   main.innerHTML = sorted.map((id,i)=>{
     const report = DATA.officeReports[id];
+    const pl = officeReportPlain(report);
+    const sum = pl.summary, pairs = [];
+    for(let k=0;k<sum.length;k+=2) pairs.push(`<tr><td><b>${sum[k][0]}:</b> ${sum[k][1]}</td><td>${sum[k+1]?`<b>${sum[k+1][0]}:</b> ${sum[k+1][1]}`:""}</td></tr>`);
     return `
       <div class="${i>0?'blank-count-page':''}">
         <div class="printhead"><h1>📄 Office Report — ${report.fromLabel||"?"} → ${report.toLabel}</h1>
           <p>Generated ${report.generatedAt ? new Date(report.generatedAt).toLocaleString() : ""}</p></div>
-        <table style="margin-bottom:14px;">
-          <tr><td><b>Beginning Book:</b> ${fmtUSD(report.totals.beginningBook)}</td><td><b>Purchases:</b> ${fmtUSD(report.totals.purchases)}</td></tr>
-          <tr><td><b>Ending Book:</b> ${fmtUSD(report.totals.endingBook)}</td><td><b>Physical Count:</b> ${fmtUSD(report.totals.physicalCount)}</td></tr>
-          <tr><td><b>Variance:</b> ${report.totals.variance>=0?"+":""}${fmtUSD(report.totals.variance)}</td><td><b>Variance %:</b> ${(report.totals.variancePct*100).toFixed(1)}%</td></tr>
-        </table>
+        <table style="margin-bottom:14px;">${pairs.join("")}</table>
+        ${pl.warnings.map(w=>`<p style="font-size:12px;">⚠️ ${w}</p>`).join("")}
         <table>
-          <thead><tr><th>Category</th><th>Beginning Book</th><th>Purchases</th><th>Units Purchased</th><th>Average Cost</th><th>Ending Book</th><th>Physical Count</th><th>Variance</th><th>Variance %</th></tr></thead>
-          <tbody>${report.rows.map(r=>`<tr><td>${r.category}</td><td>${fmtUSD(r.beginningBook)}</td><td>${fmtUSD(r.purchases)}</td><td>${r.unitsPurchased}</td><td>${r.unitsPurchased?fmtUSD(r.avgCost):"—"}</td><td>${fmtUSD(r.endingBook)}</td><td>${fmtUSD(r.physicalCount)}</td><td>${r.variance>=0?"+":""}${fmtUSD(r.variance)}</td><td>${(r.variancePct*100).toFixed(1)}%</td></tr>`).join("")}
-          <tr class="total"><td>GRAND TOTAL</td><td>${fmtUSD(report.totals.beginningBook)}</td><td>${fmtUSD(report.totals.purchases)}</td><td>${report.totals.unitsPurchased}</td><td>${report.totals.unitsPurchased?fmtUSD(report.totals.avgCost):"—"}</td><td>${fmtUSD(report.totals.endingBook)}</td><td>${fmtUSD(report.totals.physicalCount)}</td><td>${report.totals.variance>=0?"+":""}${fmtUSD(report.totals.variance)}</td><td>${(report.totals.variancePct*100).toFixed(1)}%</td></tr>
+          <thead><tr>${pl.headers.map(h=>`<th>${h}</th>`).join("")}</tr></thead>
+          <tbody>${pl.body.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join("")}</tr>`).join("")}
+          <tr class="total">${pl.total.map(c=>`<td>${c}</td>`).join("")}</tr>
           </tbody>
         </table>
       </div>
@@ -3202,12 +3309,14 @@ function officeReportsToCSV(ids){
     const report = DATA.officeReports[id];
     rows.push([`Office Report - ${report.fromLabel||"?"} to ${report.toLabel}`]);
     rows.push([`Generated ${report.generatedAt ? new Date(report.generatedAt).toLocaleString() : ""}`]);
+    const pl = officeReportPlain(report);
     rows.push([]);
-    rows.push(["Category","Beginning Book","Purchases","Units Purchased","Average Cost","Ending Book","Physical Count","Variance","Variance %"]);
-    report.rows.forEach(r=>{
-      rows.push([r.category, fmtUSD(r.beginningBook), fmtUSD(r.purchases), r.unitsPurchased, r.unitsPurchased?fmtUSD(r.avgCost):"", fmtUSD(r.endingBook), fmtUSD(r.physicalCount), fmtUSD(r.variance), r.variancePct.toFixed(3)]);
-    });
-    rows.push(["GRAND TOTAL", fmtUSD(report.totals.beginningBook), fmtUSD(report.totals.purchases), report.totals.unitsPurchased, report.totals.unitsPurchased?fmtUSD(report.totals.avgCost):"", fmtUSD(report.totals.endingBook), fmtUSD(report.totals.physicalCount), fmtUSD(report.totals.variance), report.totals.variancePct.toFixed(3)]);
+    pl.summary.forEach(x=>rows.push(x));
+    pl.warnings.forEach(w=>rows.push(["Note: "+w]));
+    rows.push([]);
+    rows.push(pl.headers);
+    pl.body.forEach(r=>rows.push(r));
+    rows.push(pl.total);
     rows.push([]); rows.push([]);
   });
   return rows.map(r=>r.map(csvEscape).join(",")).join("\n");
@@ -3235,7 +3344,7 @@ function emailOfficeReports(ids){
   lines.push("");
   sorted.forEach(id=>{
     const report = DATA.officeReports[id];
-    lines.push(`${report.fromLabel} → ${report.toLabel}: Beginning Book ${fmtUSD(report.totals.beginningBook)}, Purchases ${fmtUSD(report.totals.purchases)}, Ending Book ${fmtUSD(report.totals.endingBook)}, Physical Count ${fmtUSD(report.totals.physicalCount)}, Variance ${report.totals.variance>=0?"+":""}${fmtUSD(report.totals.variance)} (${(report.totals.variancePct*100).toFixed(1)}%)`);
+    lines.push(`${report.fromLabel} → ${report.toLabel}: ` + officeReportPlain(report).summary.map(x=>x[0]+" "+x[1]).join(", "));
   });
   const body = lines.join("\n");
   const subject = `DJ's Mini Mart — ${subjectLabel}`;
@@ -3250,7 +3359,7 @@ function renderOfficeModeTabsHtml(){
   return `<div class="subtabs no-print" style="margin-bottom:12px;">
     <button class="${m==='compare'?'active':''}" data-ormode="compare">⇄ Compare Counts</button>
     <button class="${m==='snapshot'?'active':''}" data-ormode="snapshot">🖶 Print Inventory Snapshot</button>
-    <button class="${m==='book'?'active':''}" data-ormode="book">📊 Book vs. Physical (by category)</button>
+    <button class="${m==='book'?'active':''}" data-ormode="book">📊 Shrink Check (by category)</button>
   </div>`;
 }
 function wireOfficeModeTabs(){
@@ -4147,7 +4256,7 @@ function registerRevenueInRange(fromDate, toDate){
         const dateStr = yNum + "-" + String(mIdx+1).padStart(2,'0') + "-" + String(d.day).padStart(2,'0');
         if(fromDate && dateStr < fromDate) return;
         if(toDate && dateStr > toDate) return;
-        store += d.store; days++;
+        store += d.store - num(d.gas); days++;
       });
     });
   });
