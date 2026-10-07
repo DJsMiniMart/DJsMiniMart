@@ -1061,10 +1061,12 @@ function avgDailyProfitTable(){
 
 function getForecastYears(){
   const allYears = Object.keys(DATA.overlooks).sort();
-  // treat a year as "complete" if it has data in most months
-  const complete = allYears.filter(y=>MONTHS.filter(m=>monthTotals(y,m).daysWithData>0).length>=10);
+  const thisYear = String(new Date().getFullYear());
+  // a year is "complete" only if it's a past calendar year with data in most months --
+  // the year in progress is never folded into the average, however many months it has
+  const complete = allYears.filter(y=> y < thisYear && MONTHS.filter(m=>monthTotals(y,m).daysWithData>0).length>=10);
   const chosen = complete.slice(-5);
-  return chosen.length ? chosen : allYears.slice(-5);
+  return chosen.length ? chosen : allYears.filter(y=>y<thisYear).slice(-5);
 }
 
 function recommendedAction(month, alert){
@@ -1073,11 +1075,11 @@ function recommendedAction(month, alert){
 }
 
 function getTrackerYear(years5){
-  const allYears = Object.keys(DATA.overlooks).sort();
-  const partial = allYears.filter(y=>{
-    const mo = MONTHS.filter(m=>monthTotals(y,m).daysWithData>0).length;
-    return mo>0 && mo<12 && !years5.includes(y);
-  });
+  // the tracker follows the calendar: this year whenever it has any sales entered
+  const thisYear = String(new Date().getFullYear());
+  const hasData = y => DATA.overlooks[y] && MONTHS.some(m=>monthTotals(y,m).daysWithData>0);
+  if(hasData(thisYear)) return thisYear;
+  const partial = Object.keys(DATA.overlooks).sort().filter(y=> hasData(y) && !years5.includes(y));
   return partial.length ? partial[partial.length-1] : null;
 }
 
