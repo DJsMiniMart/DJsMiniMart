@@ -5118,6 +5118,78 @@ function syncInvoiceEntryToSalesMargins(invoiceNum, oldInvoiceNum){
   md.invoices.push({company:distributor, invoice:invoiceNum, amount:total, date, sourceInvoice:invoiceNum});
 }
 
+/* ---------- Unknown vendor check (Invoice Entry + Invoice Log) ----------
+   When a distributor typed on an invoice isn't on the vendor list (by name or alias), ask whether it's
+   a new vendor or a typo before saving, so misspellings don't quietly create duplicate vendors. */
+function vendorTypoDistance(a, b){
+  a = vendorKey(a); b = vendorKey(b);
+  if(a===b) return 0;
+  const m = a.length, n = b.length; if(!m || !n) return Math.max(m, n);
+  let prev = Array.from({length:n+1}, (_,j)=>j);
+  for(let i=1;i<=m;i++){
+    const cur = [i];
+    for(let j=1;j<=n;j++) cur[j] = Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]===b[j-1]?0:1));
+    prev = cur;
+  }
+  return prev[n];
+}
+function vendorSuggestions(name, limit){
+  const k = vendorKey(name);
+  if(!k) return [];
+  return DATA.vendors.map(v=>{
+    const keys = [v.name, ...(v.aliases||[])].map(vendorKey).filter(Boolean);
+    let best = Infinity;
+    keys.forEach(vk=>{
+      let d = vendorTypoDistance(k, vk);
+      if(vk.length>=3 && k.length>=3 && (vk.includes(k) || k.includes(vk))) d = Math.min(d, 1);
+      best = Math.min(best, d);
+    });
+    return {name:v.name, d:best};
+  }).filter(x=>x.d <= Math.max(2, Math.ceil(k.length*0.4)))
+    .sort((a,b)=>a.d-b.d || a.name.localeCompare(b.name)).slice(0, limit||4).map(x=>x.name);
+}
+/* Calls onResolve(finalName) once the name is settled -- right away if it's already a known vendor.
+   onFix() runs when the person wants to go back and retype it themselves. */
+function checkVendorOrAsk(rawName, onResolve, onFix){
+  const name = String(rawName||"").replace(/\s+/g,' ').trim();
+  if(!name || findVendor(name)){ onResolve(vendorCanon(name)); return; }
+  const sugs = vendorSuggestions(name);
+  const backdrop = document.createElement('div');
+  backdrop.className = "modal-backdrop";
+  const close = ()=>backdrop.remove();
+  backdrop.innerHTML = `
+    <div class="modal-card" style="max-width:460px;">
+      <h2>\u26a0\ufe0f Vendor Not on Your List</h2>
+      <div class="sub">\u201c${vEsc(name)}\u201d isn't on your vendor list. Is this a new vendor, or a typo?</div>
+      ${sugs.length ? `<div style="font-size:12.5px;font-weight:600;margin-bottom:6px;">Did you mean:</div>
+        <div class="flex" style="flex-wrap:wrap;gap:6px;margin-bottom:6px;">${sugs.map(n=>`<button class="btn small" data-vsug="${vEsc(n)}">${vEsc(n)}</button>`).join("")}</div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);cursor:pointer;margin-bottom:4px;"><input type="checkbox" id="uvRemember" style="width:auto;"> Remember \u201c${vEsc(name)}\u201d as another spelling of the vendor I pick</label>`
+        : `<div class="sub" style="margin-bottom:6px;">No vendor on your list has a similar name.</div>`}
+      <div class="modal-actions" style="justify-content:space-between;flex-wrap:wrap;">
+        <button class="btn small" id="uvFix">\u2190 It's a typo, let me fix it</button>
+        <button class="btn small primary" id="uvNew">Add \u201c${vEsc(name)}\u201d as a new vendor</button>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  backdrop.addEventListener('click', e=>{ if(e.target===backdrop){ close(); if(onFix) onFix(); } });
+  backdrop.querySelectorAll('[data-vsug]').forEach(b=>b.onclick = ()=>{
+    const v = findVendor(b.dataset.vsug);
+    const rem = document.getElementById('uvRemember');
+    if(v && rem && rem.checked){
+      v.aliases = v.aliases || [];
+      if(!v.aliases.some(a=>vendorKey(a)===vendorKey(name))) v.aliases.push(name);
+      persist();
+    }
+    close(); onResolve(v ? v.name : b.dataset.vsug);
+  });
+  document.getElementById('uvFix').onclick = ()=>{ close(); if(onFix) onFix(); };
+  document.getElementById('uvNew').onclick = ()=>{
+    const v = ensureVendor(name); persist();
+    toast(`${v.name} added to your vendor list`);
+    close(); onResolve(v.name);
+  };
+}
+
 /* ---------- Invoice Entry (log deliveries, line by line) ---------- */
 let invoiceDraft = null; // {distributor, invoice, date, lines:[{name,category,unit,cost,qty,total}]}
 /* Fires when an Invoice Entry line's product name doesn't match anything in the Product List (by
@@ -5486,6 +5558,13 @@ function renderInvoiceEntry(el){
     renderInvoiceEntry(el);
   };
   document.getElementById('ieSubmitBtn').onclick = ()=>{
+    const distEl = document.getElementById('ieDist');
+    if(!invoiceDraft.lines.length){ toast("Add at least one line item first", true); return; }
+    if(!distEl.value.trim() || !document.getElementById('ieInvoice').value.trim()){ toast("Enter a distributor and invoice #", true); return; }
+    checkVendorOrAsk(distEl.value, name=>{ distEl.value = name; invoiceDraft.distributor = name; submitInvoice(); },
+      ()=>{ distEl.focus(); distEl.select(); toast("Fix the distributor name, then Submit again"); });
+  };
+  function submitInvoice(){
     const distributor = vendorCanon(document.getElementById('ieDist').value.trim());
     const invoice = document.getElementById('ieInvoice').value.trim();
     const date = document.getElementById('ieDate').value || null;
@@ -5514,7 +5593,7 @@ function renderInvoiceEntry(el){
     drawVendorTabs();
     invoiceDraft = {distributor:"", invoice:"", date:"", lines:[]};
     renderInvoiceEntry(el);
-  };
+  }
 
   let ieSearch = "", ieShowReconciled = false;
   const body = document.getElementById('ieBody');
@@ -5561,6 +5640,7 @@ function renderInvoiceEntry(el){
 /* ---------- Invoice Log (grouped from Invoice Entry, by invoice #) ---------- */
 let ilExpanded = null; // invoice # currently expanded for editing
 let ilShowReconciled = false;
+let ilCompanySearch = ""; // Invoice Log company-name filter (kept while you work)
 function renderInvoiceLog(el){
   const groups = {};
   DATA.invoiceEntries.forEach(e=>{
@@ -5572,8 +5652,12 @@ function renderInvoiceLog(el){
     if(e.reconciled) groups[e.invoice].reconciledLines++;
   });
   const allRows = Object.values(groups).map(g=>({...g, fullyReconciled: g.reconciledLines===g.lines})).sort((a,b)=> (b.date||"").localeCompare(a.date||""));
-  const rows = ilShowReconciled ? allRows : allRows.filter(r=>!r.fullyReconciled);
-  const hiddenCount = allRows.length - rows.length;
+  const companyTerm = ilCompanySearch.trim().toLowerCase();
+  const companyRows = companyTerm ? allRows.filter(r=>String(r.distributor||"").toLowerCase().includes(companyTerm)) : allRows;
+  const rows = ilShowReconciled ? companyRows : companyRows.filter(r=>!r.fullyReconciled);
+  const hiddenCount = companyRows.length - rows.length;
+  const companyNames = [...new Set(allRows.map(r=>String(r.distributor||"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  const ilAttr = v=>String(v).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;");
   const catNames = [...new Set(DATA.inventory.map(p=>p.category))].sort();
   const nameList = [...new Set(DATA.inventory.map(p=>p.name))];
   el.innerHTML = `
@@ -5587,9 +5671,13 @@ function renderInvoiceLog(el){
       </div>
     </div>
     <div class="card">
-      <div class="form-grid" style="grid-template-columns:1fr;">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="ilShowReconciledCk" ${ilShowReconciled?"checked":""} style="width:auto;"> Show reconciled invoices ${hiddenCount?`(${hiddenCount} hidden)`:""}</label>
+      <div class="form-grid" style="grid-template-columns:2fr auto auto;align-items:end;">
+        <div><label>Search by company</label><input type="search" id="ilCompanySearch" list="ilCompanyList" value="${ilAttr(ilCompanySearch)}" placeholder="Type a company name (e.g. St. Joe, Coke)..." autocomplete="off"></div>
+        <div>${ilCompanySearch ? `<button class="btn small" id="ilCompanyClear">Clear</button>` : ""}</div>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:8px;"><input type="checkbox" id="ilShowReconciledCk" ${ilShowReconciled?"checked":""} style="width:auto;"> Show reconciled invoices ${hiddenCount?`(${hiddenCount} hidden)`:""}</label>
       </div>
+      <datalist id="ilCompanyList">${companyNames.map(n=>`<option value="${ilAttr(n)}">`).join("")}</datalist>
+      ${companyTerm ? `<div class="sub" style="margin:-4px 0 10px;">${rows.length.toLocaleString()} invoice${rows.length===1?"":"s"} shown for “${ilAttr(ilCompanySearch.trim())}”, totaling ${fmtUSD(rows.reduce((t,r)=>t+r.total,0))}${hiddenCount?` (${hiddenCount} reconciled hidden)`:""}.</div>` : ""}
       <div class="tablewrap"><table>
         <thead><tr><th>Invoice #</th><th>Company</th><th>Date</th><th># Line Items</th><th>Discount</th><th>Invoice Total</th><th>Status</th><th></th></tr></thead>
         <tbody id="ilBody">
@@ -5604,7 +5692,7 @@ function renderInvoiceLog(el){
           const editHtml = `<tr><td colspan="8" style="padding:0;">
             <div class="card" style="margin:8px 0;background:#F8FAFD;">
               <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
-                <div><label>Company</label><input class="editable-cell" id="ilEditDist" value="${r.distributor||""}"></div>
+                <div><label>Company</label><input class="editable-cell" id="ilEditDist" list="ilCompanyList" value="${ilAttr(r.distributor||"")}"></div>
                 <div><label>Invoice #</label><input class="editable-cell" id="ilEditInvoice" value="${r.invoice||""}"></div>
                 <div><label>Date</label><input class="editable-cell" type="date" id="ilEditDate" value="${r.date?r.date.slice(0,10):""}"></div>
               </div>
@@ -5628,13 +5716,105 @@ function renderInvoiceLog(el){
             </div>
           </td></tr>`;
           return rowHtml + editHtml;
-        }).join("") : `<tr><td colspan="8" style="color:var(--text-dim);text-align:center;">${ilShowReconciled ? "No invoices yet." : "No pending invoices \u2014 check \u201cShow reconciled invoices\u201d to see everything."}</td></tr>`}
+        }).join("") : `<tr><td colspan="8" style="color:var(--text-dim);text-align:center;">${companyTerm ? (hiddenCount ? `No pending invoices for this company \u2014 check \u201cShow reconciled invoices\u201d to see ${hiddenCount} more.` : "No invoices match that company name.") : ilShowReconciled ? "No invoices yet." : "No pending invoices \u2014 check \u201cShow reconciled invoices\u201d to see everything."}</td></tr>`}
         </tbody>
       </table></div>
       <datalist id="ilCatList">${catNames.map(c=>`<option value="${c}">`).join("")}</datalist>
     </div>
+    <div class="card" id="ilVendorCard">
+      <h2>Vendor List</h2>
+      <div class="sub">The companies you buy from. When an invoice's distributor isn't on this list, you'll be asked whether it's a new vendor or a typo. This is the same list as Inventory \u2192 Vendors (contact info lives there).</div>
+      <div class="form-grid" style="grid-template-columns:2fr auto 1fr;align-items:end;">
+        <div><label>Add a vendor</label><input id="ilVendorNew" placeholder="Vendor name"></div>
+        <div><button class="btn primary" id="ilVendorAddBtn">Add Vendor</button></div>
+        <div><label>Search vendors</label><input type="search" id="ilVendorSearch" placeholder="Filter list..."></div>
+      </div>
+      <div id="ilVendorUnlisted"></div>
+      <div class="tablewrap" style="max-height:320px;"><table>
+        <thead><tr><th>Vendor</th><th>Other Spellings</th><th># Invoices</th><th>Last Invoice</th><th></th></tr></thead>
+        <tbody id="ilVendorBody"></tbody>
+      </table></div>
+    </div>
   `;
   document.getElementById('ilShowReconciledCk').onchange = e=>{ ilShowReconciled = e.target.checked; renderInvoiceLog(el); };
+  (function vendorListWindow(){
+    let vq = "";
+    const vbody = document.getElementById('ilVendorBody');
+    const unlistedBox = document.getElementById('ilVendorUnlisted');
+    function stats(){
+      const m = new Map();
+      allRows.forEach(r=>{
+        const v = findVendor(r.distributor); const k = v ? v.name : null;
+        if(!k) return;
+        const cur = m.get(k) || {n:0, last:""};
+        cur.n++; if((r.date||"") > cur.last) cur.last = r.date||"";
+        m.set(k, cur);
+      });
+      return m;
+    }
+    function drawV(){
+      const st = stats();
+      const list = DATA.vendors.slice().sort((a,b)=>a.name.localeCompare(b.name))
+        .filter(v=>!vq || v.name.toLowerCase().includes(vq) || (v.aliases||[]).some(a=>String(a).toLowerCase().includes(vq)));
+      vbody.innerHTML = list.length ? list.map(v=>{
+        const s2 = st.get(v.name) || {n:0, last:""};
+        const prodCount = DATA.inventory.filter(p=>p.vendor===v.name).length;
+        return `<tr><td><b>${vEsc(v.name)}</b></td><td>${(v.aliases||[]).length ? (v.aliases||[]).map(a=>`<span class="pill" style="margin:1px 3px 1px 0;">${vEsc(a)} <a href="#" data-unalias="${vEsc(v.uid)}" data-alias="${vEsc(a)}" title="Forget this spelling" style="text-decoration:none;color:var(--text-dim);">\u00d7</a></span>`).join("") : '<span class="sub" style="margin:0;">\u2014</span>'}</td>
+          <td>${s2.n}</td><td>${s2.last ? s2.last.slice(0,10) : "\u2014"}</td>
+          <td style="white-space:nowrap;text-align:right;">${s2.n || prodCount ? `<span class="sub" style="margin:0;" title="Vendors with invoices or products can't be removed here">in use</span>` : `<button class="btn small danger" data-vremove="${vEsc(v.uid)}">Remove</button>`}</td></tr>`;
+      }).join("") : `<tr><td colspan="5" style="text-align:center;color:var(--text-dim);padding:16px;">${DATA.vendors.length ? "No vendors match." : "No vendors yet \u2014 add one above."}</td></tr>`;
+      // companies already on invoices that aren't on the list
+      const unlisted = [...new Set(allRows.map(r=>String(r.distributor||"").trim()).filter(n=>n && !findVendor(n)))].sort();
+      unlistedBox.innerHTML = unlisted.length ? `<div class="note" style="margin:0 0 10px;">\u26a0\ufe0f ${unlisted.length} compan${unlisted.length===1?"y":"ies"} on past invoices ${unlisted.length===1?"isn't":"aren't"} on your vendor list: ${unlisted.map(n=>`<button class="btn small" data-vcheck="${vEsc(n)}" style="margin:2px;">${vEsc(n)}</button>`).join("")} <span class="sub" style="margin:0;">Click one to add it or mark it as a typo.</span></div>` : "";
+      vbody.querySelectorAll('[data-vremove]').forEach(b=>b.onclick = ()=>{
+        const v = DATA.vendors.find(x=>x.uid===b.dataset.vremove); if(!v) return;
+        if(!confirm(`Remove ${v.name} from the vendor list? Its contact info will be deleted.`)) return;
+        DATA.vendors = DATA.vendors.filter(x=>x!==v); persist(); drawV();
+      });
+      vbody.querySelectorAll('[data-unalias]').forEach(a=>a.onclick = e=>{
+        e.preventDefault();
+        const v = DATA.vendors.find(x=>x.uid===a.dataset.unalias); if(!v) return;
+        v.aliases = (v.aliases||[]).filter(x=>x!==a.dataset.alias); persist(); drawV();
+      });
+      unlistedBox.querySelectorAll('[data-vcheck]').forEach(b=>b.onclick = ()=>{
+        const old = b.dataset.vcheck;
+        checkVendorOrAsk(old, name=>{
+          if(name!==old){
+            const affected = new Set();
+            DATA.invoiceEntries.forEach(e=>{ if(String(e.distributor||"").trim()===old){ e.distributor = name; affected.add(e.invoice); } });
+            affected.forEach(inv=>syncInvoiceEntryToSalesMargins(inv));
+            persist(); toast(`${affected.size} invoice${affected.size===1?"":"s"} changed from \u201c${old}\u201d to ${name}`);
+          }
+          renderInvoiceLog(el);
+        });
+      });
+    }
+    const addInp = document.getElementById('ilVendorNew');
+    const add = ()=>{
+      const name = addInp.value.replace(/\s+/g,' ').trim();
+      if(!name){ addInp.focus(); return; }
+      const exists = findVendor(name);
+      if(exists){ toast(`${exists.name} is already on the list`, true); return; }
+      const near = vendorSuggestions(name, 3);
+      if(near.length && !confirm(`\u201c${name}\u201d looks similar to ${near.join(", ")}. Add it as a separate vendor anyway?`)) return;
+      ensureVendor(name); persist(); toast(`${name} added to your vendor list`);
+      addInp.value = ""; drawV();
+    };
+    document.getElementById('ilVendorAddBtn').onclick = add;
+    addInp.onkeydown = e=>{ if(e.key==="Enter") add(); };
+    document.getElementById('ilVendorSearch').oninput = e=>{ vq = e.target.value.trim().toLowerCase(); drawV(); };
+    drawV();
+  })();
+  const ilCoEl = document.getElementById('ilCompanySearch');
+  ilCoEl.oninput = ()=>{
+    const pos = ilCoEl.selectionStart;
+    ilCompanySearch = ilCoEl.value; ilExpanded = null;
+    renderInvoiceLog(el);
+    const again = document.getElementById('ilCompanySearch');
+    if(again){ again.focus(); try{ again.setSelectionRange(pos, pos); }catch(_){} }
+  };
+  const ilCoClear = document.getElementById('ilCompanyClear');
+  if(ilCoClear) ilCoClear.onclick = ()=>{ ilCompanySearch = ""; renderInvoiceLog(el); };
   document.getElementById('ilBody').querySelectorAll('[data-edit]').forEach(btn=>{
     btn.onclick = ()=>{
       ilExpanded = ilExpanded===btn.dataset.edit ? null : btn.dataset.edit;
@@ -5708,10 +5888,13 @@ function renderInvoiceLog(el){
   const dateInp = document.getElementById('ilEditDate');
   if(distInp) distInp.onchange = ()=>{
     const oldInvoice = ilExpanded;
-    const val = distInp.value.trim();
-    DATA.invoiceEntries.forEach(e=>{ if(e.invoice===oldInvoice) e.distributor = val; });
-    syncInvoiceEntryToSalesMargins(oldInvoice);
-    persist(); toast("Company updated"); renderInvoiceLog(el);
+    const raw = distInp.value.trim();
+    if(!raw){ toast("Company can't be blank", true); renderInvoiceLog(el); return; }
+    checkVendorOrAsk(raw, val=>{
+      DATA.invoiceEntries.forEach(e=>{ if(e.invoice===oldInvoice) e.distributor = val; });
+      syncInvoiceEntryToSalesMargins(oldInvoice);
+      persist(); toast("Company updated"); renderInvoiceLog(el);
+    }, ()=>{ const again = document.getElementById('ilEditDist'); if(again){ again.focus(); again.select(); } });
   };
   if(invInp) invInp.onchange = ()=>{
     const oldInvoice = ilExpanded;
@@ -6943,56 +7126,176 @@ function renderPrintSummary(el){
 }
 
 /* ---------- Cigarette & Tobacco Buydowns ---------- */
+/* Two side-by-side windows (Cigarettes | Tobacco), each with its own scroll, search box,
+   brand filter, and checkboxes to change the buydown on all or just some products at once -- so when one
+   manufacturer (e.g. Marlboro) changes its buydown, you filter to that brand and update
+   it in one place without scrolling the whole list. Filters are remembered while you work. */
+const bdFilters = { CIGARETTES:{q:"", brand:""}, TOBACCO:{q:"", brand:""} };
+const bdSelected = { CIGARETTES:new Set(), TOBACCO:new Set() }; // keys from bulkProductKey(); kept while you change filters, like Bulk Price Update
+function bdBrandOf(p){ return String(p.name||"").trim().split(/\s+/)[0].toUpperCase(); }
+function bdEsc(s){ return String(s??"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function renderBuydowns(el){
-  const products = DATA.inventory.filter(p=>{
-    const c = (p.category||"").toUpperCase();
-    return c==="TOBACCO" || c==="CIGARETTES";
-  });
+  const panels = [
+    {cat:"CIGARETTES", title:"Cigarettes", key:"cig"},
+    {cat:"TOBACCO", title:"Tobacco", key:"tob"},
+  ];
   el.innerHTML = `
-    <div class="note">Enter Buydown $/Pack (from your distributor contract) and, if applicable, Multipack Qty + Deal Price. Margins recalculate live.</div>
-    <div class="card">
-      <div class="tablewrap"><table>
-        <thead><tr><th>Product</th><th>Category</th><th>Cost/Pack</th><th>Retail</th><th>Buydown $/Pack</th><th>Cost After Buydown</th>
-          <th>Margin Before</th><th>Margin After</th><th>Multipack Qty</th><th>Deal Price</th><th>Margin at Deal</th></tr></thead>
-        <tbody id="bdBody"></tbody>
-      </table></div>
+    <style>
+      .bd-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:16px;align-items:start;}
+      @media(max-width:768px){.bd-grid{grid-template-columns:1fr;}}
+      .bd-grid .card{margin-bottom:0;}
+      .bd-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:10px;}
+      .bd-head h2{margin:0;}
+      .bd-count{font-size:12px;color:var(--text-dim);}
+      .bd-filters{display:grid;grid-template-columns:2fr 1fr auto;gap:8px;margin-bottom:8px;}
+      .bd-bulk{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;color:var(--text-dim);margin-bottom:10px;}
+      .bd-bulk input{width:90px;}
+      .bd-bulk select{width:auto;}
+      .bd-grid td:first-child, .bd-grid th:first-child{width:28px;padding-right:0;}
+      .bd-grid input[type=checkbox]{width:auto;cursor:pointer;}
+      .bd-grid tr.bd-sel td{background:var(--gold-bg);}
+      .bd-grid th{z-index:2;}
+      .bd-grid .tablewrap{max-height:62vh;}
+      .bd-grid td, .bd-grid th{white-space:nowrap;}
+      .bd-grid td:nth-child(2){white-space:normal;min-width:160px;}
+    </style>
+    <div class="note">Enter Buydown $/Pack (from your distributor contract) and, if applicable, Multipack Qty + Deal Price. Margins recalculate live. Use the search box or brand filter to jump to one brand, check the products you want (or the header box for all shown), and change their buydown together.</div>
+    <div class="bd-grid">
+      ${panels.map(pn=>`
+      <div class="card" id="bdPanel_${pn.key}">
+        <div class="bd-head"><h2>${pn.title}</h2><span class="bd-count" id="bdCount_${pn.key}"></span></div>
+        <div class="bd-filters">
+          <input type="search" id="bdQ_${pn.key}" placeholder="Search ${pn.title.toLowerCase()} (e.g. Marlboro 100)...">
+          <select id="bdBrand_${pn.key}"></select>
+          <button class="btn small" id="bdClear_${pn.key}">Clear</button>
+        </div>
+        <div class="bd-bulk">
+          <select id="bdBulkMethod_${pn.key}">
+            <option value="set">Set buydown to</option>
+            <option value="increaseAmt">Increase buydown by</option>
+            <option value="decreaseAmt">Decrease buydown by</option>
+          </select>
+          <div class="dollar-wrap"><input type="number" step="0.01" min="0" id="bdBulkVal_${pn.key}" placeholder="0.00"></div>
+          <button class="btn small primary" id="bdBulkGo_${pn.key}">Apply to <span id="bdSelN_${pn.key}">0</span> selected</button>
+          <button class="btn small" id="bdSelClear_${pn.key}">Clear selection</button>
+        </div>
+        <div class="tablewrap"><table>
+          <thead><tr><th><input type="checkbox" id="bdSelAll_${pn.key}" title="Select / unselect every product shown"></th><th>Product</th><th>Cost/Pack</th><th>Retail</th><th>Buydown $/Pack</th><th>Cost After BD</th>
+            <th>Margin Before</th><th>Margin After</th><th>Multipack Qty</th><th>Deal Price</th><th>Margin at Deal</th></tr></thead>
+          <tbody id="bdBody_${pn.key}"></tbody>
+        </table></div>
+      </div>`).join("")}
     </div>
   `;
-  const body = document.getElementById('bdBody');
-  function draw(){
-    body.innerHTML = "";
-    products.forEach(p=>{
-      const cost = num(p.cost), retail = num(p.retail), buydown = num(p.buydown);
-      const costAfter = cost - buydown;
-      const marginBefore = retail ? (retail-cost)/retail : 0;
-      const marginAfter = retail ? (retail-costAfter)/retail : 0;
-      const mpQty = p.multipack_qty, dealPrice = p.multipack_deal_price;
-      let marginAtDeal = "";
-      if(mpQty && dealPrice){
-        const dealCost = costAfter*mpQty;
-        marginAtDeal = dealPrice ? fmtPct((dealPrice-dealCost)/dealPrice) : "";
-      }
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${p.name}</td><td>${p.category}</td><td>${fmtUSD(cost)}</td><td>${fmtUSD(retail)}</td>
-        <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${buydown}" data-num="${p.num}" data-cat="${p.category}" data-field="buydown" style="width:70px"></div></td>
-        <td>${fmtUSD(costAfter)}</td><td>${fmtPct(marginBefore)}</td><td style="font-weight:700;color:${marginAfter>marginBefore?'var(--green)':'inherit'}">${fmtPct(marginAfter)}</td>
-        <td><input class="editable-cell" type="number" value="${mpQty??""}" data-num="${p.num}" data-cat="${p.category}" data-field="multipack_qty" style="width:60px"></td>
-        <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${dealPrice??""}" data-num="${p.num}" data-cat="${p.category}" data-field="multipack_deal_price" style="width:70px"></div></td>
-        <td>${marginAtDeal}</td>`;
-      body.appendChild(tr);
-    });
-    body.querySelectorAll('input.editable-cell').forEach(inp=>{
-      inp.onchange = ()=>{
-        const p = DATA.inventory.find(x=>x.num===parseInt(inp.dataset.num) && x.category===inp.dataset.cat);
-        if(!p) return;
-        const field = inp.dataset.field;
-        const v = inp.value==="" ? null : parseFloat(inp.value);
-        p[field] = v;
-        persist(); draw();
-      };
-    });
-  }
-  draw();
+
+  panels.forEach(pn=>{
+    const f = bdFilters[pn.cat];
+    const qEl = document.getElementById('bdQ_'+pn.key);
+    const brandEl = document.getElementById('bdBrand_'+pn.key);
+    const body = document.getElementById('bdBody_'+pn.key);
+    const countEl = document.getElementById('bdCount_'+pn.key);
+    const sel = bdSelected[pn.cat];
+    const selAllEl = document.getElementById('bdSelAll_'+pn.key);
+    const selNEl = document.getElementById('bdSelN_'+pn.key);
+    function syncSel(){
+      const list = visible();
+      selNEl.textContent = sel.size;
+      const n = list.filter(p=>sel.has(bulkProductKey(p))).length;
+      selAllEl.checked = list.length>0 && n===list.length;
+      selAllEl.indeterminate = n>0 && n<list.length;
+    }
+    const all = ()=>DATA.inventory.filter(p=>(p.category||"").toUpperCase()===pn.cat);
+
+    function fillBrands(){
+      const brands = [...new Set(all().map(bdBrandOf).filter(Boolean))].sort();
+      if(f.brand && !brands.includes(f.brand)) f.brand = "";
+      brandEl.innerHTML = `<option value="">All brands</option>` + brands.map(b=>`<option value="${bdEsc(b)}"${b===f.brand?" selected":""}>${bdEsc(b)}</option>`).join("");
+    }
+    function visible(){
+      const terms = f.q.toLowerCase().split(/\s+/).filter(Boolean);
+      return all().filter(p=>{
+        if(f.brand && bdBrandOf(p)!==f.brand) return false;
+        const hay = String(p.name||"").toLowerCase() + " " + (p.num??"");
+        return terms.every(t=>hay.includes(t));
+      });
+    }
+    function draw(){
+      const list = visible(), total = all().length;
+      countEl.textContent = list.length===total ? `${total} products` : `${list.length} of ${total} shown`;
+      body.innerHTML = list.length ? "" : `<tr><td colspan="11" style="text-align:center;color:var(--text-dim);padding:18px;">No ${pn.title.toLowerCase()} match this filter.</td></tr>`;
+      list.forEach(p=>{
+        const cost = num(p.cost), retail = num(p.retail), buydown = num(p.buydown);
+        const costAfter = cost - buydown;
+        const marginBefore = retail ? (retail-cost)/retail : 0;
+        const marginAfter = retail ? (retail-costAfter)/retail : 0;
+        const mpQty = p.multipack_qty, dealPrice = p.multipack_deal_price;
+        let marginAtDeal = "";
+        if(mpQty && dealPrice){
+          const dealCost = costAfter*mpQty;
+          marginAtDeal = dealPrice ? fmtPct((dealPrice-dealCost)/dealPrice) : "";
+        }
+        const key = bulkProductKey(p);
+        const tr = document.createElement('tr');
+        if(sel.has(key)) tr.className = "bd-sel";
+        tr.innerHTML = `<td><input type="checkbox" class="bd-check" data-key="${bdEsc(key)}"${sel.has(key)?" checked":""}></td><td>${bdEsc(p.name)}</td><td>${fmtUSD(cost)}</td><td>${fmtUSD(retail)}</td>
+          <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${buydown}" data-num="${p.num}" data-cat="${bdEsc(p.category)}" data-field="buydown" style="width:70px"></div></td>
+          <td>${fmtUSD(costAfter)}</td><td>${fmtPct(marginBefore)}</td><td style="font-weight:700;color:${marginAfter>marginBefore?'var(--green)':'inherit'}">${fmtPct(marginAfter)}</td>
+          <td><input class="editable-cell" type="number" value="${mpQty??""}" data-num="${p.num}" data-cat="${bdEsc(p.category)}" data-field="multipack_qty" style="width:60px"></td>
+          <td><div class="dollar-wrap"><input class="editable-cell" type="number" step="0.01" value="${dealPrice??""}" data-num="${p.num}" data-cat="${bdEsc(p.category)}" data-field="multipack_deal_price" style="width:70px"></div></td>
+          <td>${marginAtDeal}</td>`;
+        body.appendChild(tr);
+      });
+      body.querySelectorAll('input.editable-cell').forEach(inp=>{
+        inp.onchange = ()=>{
+          const p = DATA.inventory.find(x=>x.num===parseInt(inp.dataset.num) && x.category===inp.dataset.cat);
+          if(!p) return;
+          const field = inp.dataset.field;
+          const v = inp.value==="" ? null : parseFloat(inp.value);
+          p[field] = v;
+          persist(); draw();
+        };
+      });
+      body.querySelectorAll('.bd-check').forEach(cb=>{
+        cb.onchange = ()=>{
+          if(cb.checked) sel.add(cb.dataset.key); else sel.delete(cb.dataset.key);
+          cb.closest('tr').classList.toggle('bd-sel', cb.checked);
+          syncSel();
+        };
+      });
+      syncSel();
+    }
+
+    qEl.value = f.q;
+    fillBrands();
+    qEl.oninput = ()=>{ f.q = qEl.value; draw(); };
+    brandEl.onchange = ()=>{ f.brand = brandEl.value; draw(); };
+    document.getElementById('bdClear_'+pn.key).onclick = ()=>{ f.q = ""; f.brand = ""; qEl.value = ""; brandEl.value = ""; draw(); };
+    selAllEl.onchange = ()=>{
+      const list = visible();
+      list.forEach(p=>{ const k = bulkProductKey(p); if(selAllEl.checked) sel.add(k); else sel.delete(k); });
+      draw();
+    };
+    document.getElementById('bdSelClear_'+pn.key).onclick = ()=>{ sel.clear(); draw(); };
+    document.getElementById('bdBulkGo_'+pn.key).onclick = ()=>{
+      const chosen = all().filter(p=>sel.has(bulkProductKey(p)));
+      if(!chosen.length){ toast("Check at least one product first (or the header box for all shown)", true); return; }
+      const valEl = document.getElementById('bdBulkVal_'+pn.key);
+      const amount = parseFloat(valEl.value);
+      if(isNaN(amount)){ toast("Enter a buydown amount", true); valEl.focus(); return; }
+      const method = document.getElementById('bdBulkMethod_'+pn.key).value;
+      const verb = method==="set" ? `Set buydown to ${fmtUSD(amount)}/pack` : method==="increaseAmt" ? `Increase buydown by ${fmtUSD(amount)}/pack` : `Decrease buydown by ${fmtUSD(amount)}/pack`;
+      const sample = chosen.slice(0,5).map(p=>p.name).join(", ") + (chosen.length>5 ? ` and ${chosen.length-5} more` : "");
+      if(!confirm(`${verb} on ${chosen.length} ${pn.cat==="CIGARETTES"?"cigarette":"tobacco"} product${chosen.length===1?"":"s"}?\n\n${sample}`)) return;
+      chosen.forEach(p=>{
+        const cur = num(p.buydown);
+        const next = method==="set" ? amount : method==="increaseAmt" ? cur + amount : cur - amount;
+        p.buydown = Math.max(0, +next.toFixed(2));
+      });
+      valEl.value = "";
+      persist(); toast(`Updated buydown on ${chosen.length} product${chosen.length===1?"":"s"}`); draw();
+    };
+    draw();
+  });
 }
 
 
