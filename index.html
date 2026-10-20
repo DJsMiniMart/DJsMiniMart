@@ -58,6 +58,7 @@
   td{padding:7px 10px;border-bottom:1px solid var(--border);}
   tr:nth-child(even) td{background:#F8FAFD;}
   tr.total td{background:var(--gold-bg);font-weight:700;border-top:2px solid var(--gold);}
+  .tablewrap th{z-index:2;}
   .tablewrap{overflow-x:auto;max-height:520px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;}
   .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:600;}
   .pill.ok{background:var(--green-bg);color:var(--green);}
@@ -182,6 +183,18 @@
   .vchip{font:inherit;font-size:12px;padding:5px 11px;border-radius:999px;border:1px solid var(--navy-light);background:var(--gold-bg);color:var(--unc-lo);cursor:pointer;margin:2px 5px 2px 0;white-space:nowrap;}
   .vchip:hover{background:var(--navy);border-color:var(--navy);color:#fff;}
   .navbadge{margin-left:auto;background:#e74c3c;color:#fff;border-radius:999px;font-size:11px;font-weight:700;padding:1px 7px;line-height:1.5;}
+  .sd-toggle{cursor:pointer;}
+  .sd-toggle:hover b{text-decoration:underline;}
+  .sd-caret{display:inline-block;width:12px;color:var(--text-dim);font-size:10px;}
+  tr.sd-row > td{background:#F4F7FC !important;padding:12px 14px;border-bottom:2px solid var(--border);}
+  .sd-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;}
+  .sd-box{background:#fff;border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
+  .sd-lbl{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);margin-bottom:4px;}
+  .sd-big{font-size:18px;font-weight:700;color:var(--navy);}
+  .sd-small{font-size:12px;color:var(--text-dim);margin-top:2px;}
+  .sd-table{width:auto;font-size:12px;margin-top:4px;}
+  .sd-table th{position:static;background:transparent;color:var(--text-dim);padding:3px 12px 3px 0;font-size:10.5px;}
+  .sd-table td{padding:3px 12px 3px 0;background:transparent !important;border:none;}
   .bulkbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0 10px;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;}
   .price-up{color:var(--red);font-weight:600;white-space:nowrap;}
   .price-down{color:var(--green);font-weight:600;white-space:nowrap;}
@@ -9451,7 +9464,67 @@ const CLEANUP_KINDS = {
   novendor:{label:"No vendor", group:"missing"}, nosize:{label:"No size", group:"missing"}, buydown:{label:"Missing buydown", group:"missing"},
 };
 const SWEEP_MONEY = {retail:1, cost:1, buydown:1};
-let cleanupState = {group:"ALL", kind:"ALL", showHandled:false, selected:new Set()};
+let cleanupState = {group:"ALL", kind:"ALL", showHandled:false, selected:new Set(), open:new Set()};
+/* Site Sweep: click a product to see its invoice history -- the newest invoice it appeared on and that
+   invoice's cost -- next to the current cost/retail, so a retail fix can be judged against what you
+   actually paid last time. */
+function sweepInvoiceLines(p){
+  if(!p) return {lines:[], byNameOnly:false};
+  const n = normName(p.name), u = normUnit(p.unit);
+  const sortNew = (a,b)=>String(b.date||"").localeCompare(String(a.date||""));
+  let lines = DATA.invoiceEntries.filter(e=>normName(e.name)===n && normUnit(e.unit)===u);
+  let byNameOnly = false;
+  if(!lines.length){ lines = DATA.invoiceEntries.filter(e=>normName(e.name)===n); byNameOnly = lines.length>0; }
+  return {lines:lines.slice().sort(sortNew), byNameOnly};
+}
+function sweepDetailHtml(o){
+  const p = o.p;
+  if(!p) return `<div class="sub" style="margin:0;">This product is no longer on file.</div>`;
+  const {lines, byNameOnly} = sweepInvoiceLines(p);
+  const last = lines[0];
+  const bd = isBuydownCategory(p.category) ? num(p.buydown) : 0;
+  const retail = num(p.retail), costNow = num(p.cost);
+  const mg = (cost, r)=> r>0 ? (r-(cost-bd))/r : null;
+  const pct = v=> v==null ? "\u2014" : `<span style="color:${v<0?'var(--red)':'inherit'};font-weight:600;">${fmtPct(v)}</span>`;
+  const cond = conditionFor(p);
+  let sug = null;
+  if(last && num(last.cost)>0){ sug = smartSuggestedRetail(p, num(last.cost)); if(sug!=null && !(sug>0)) sug = null; }
+  const sameAsNow = sug!=null && Math.abs(sug-retail)<0.005;
+  const canUse = o.field==="retail" && !o.decision && sug!=null && !sameAsNow;
+  const changes = (DATA.priceChangeLog||[]).filter(c=>c.productUid===p.uid).slice(0,3);
+  const lastBox = last ? `
+      <div class="sd-box">
+        <div class="sd-lbl">Most recent invoice</div>
+        <div class="sd-big">${fmtUSD(num(last.cost))} <span class="sd-small">cost${last.shipper?" (shipper deal)":""}</span></div>
+        <div class="sd-small">${vEsc(last.date?String(last.date).slice(0,10):"no date")} \u00b7 ${vEsc(last.distributor||"\u2014")} \u00b7 invoice #${vEsc(last.invoice||"\u2014")}</div>
+        <div class="sd-small">qty ${num(last.qty)}${num(last.discount)?` \u00b7 one-time discount ${fmtUSD(num(last.discount))}`:""}${byNameOnly?` \u00b7 <span title="No invoice line matched this size exactly">matched by name (size ${vEsc(last.unit||"blank")})</span>`:""}</div>
+      </div>` : `
+      <div class="sd-box"><div class="sd-lbl">Most recent invoice</div><div class="sd-small" style="margin-top:4px;">This product hasn't shown up on any invoice yet.</div></div>`;
+  return `
+    <div class="sd-grid">
+      ${lastBox}
+      <div class="sd-box">
+        <div class="sd-lbl">On file now</div>
+        <div class="sd-small">Cost ${fmtUSD(costNow)}${bd?` \u2212 ${fmtUSD(bd)} buydown`:""} \u00b7 Retail <b>${fmtUSD(retail)}</b></div>
+        <div class="sd-small">Margin at current retail: ${pct(mg(costNow, retail))}</div>
+        ${last ? `<div class="sd-small">Using last invoice cost: ${pct(mg(num(last.cost), retail))}${Math.abs(num(last.cost)-costNow)>=0.005?` <span class="${num(last.cost)>costNow?"price-up":"price-down"}">(invoice ${num(last.cost)>costNow?"higher":"lower"} than cost on file)</span>`:""}</div>` : ""}
+        ${cond ? `<div class="sd-small">Target: ${condTargetText(cond)}</div>` : ""}
+      </div>
+      <div class="sd-box">
+        <div class="sd-lbl">Suggested retail from last invoice</div>
+        ${sug!=null ? `<div class="sd-big">${fmtUSD(sug)} <span class="sd-small">margin ${fmtPct(mg(num(last.cost), sug))}</span></div>
+          <div class="sd-small">${sameAsNow ? (cond ? "Current retail is already inside its Margin Condition at this cost" : "Same as current retail \u2014 no Margin Condition is set, so this just keeps today's margin") : cond ? "Keeps it inside its Margin Condition" : "Keeps the product's current margin on the new cost"}</div>
+          ${canUse?`<button class="btn small primary" data-sduse="${vEsc(o.key)}" data-val="${sug.toFixed(2)}" style="margin-top:6px;">Use ${fmtUSD(sug)} in Fix to</button>`:""}`
+          : `<div class="sd-small" style="margin-top:4px;">Needs an invoice cost to suggest a price.</div>`}
+      </div>
+    </div>
+    ${lines.length>1 ? `<div class="sd-lbl" style="margin-top:10px;">Earlier invoices</div>
+      <table class="sd-table"><thead><tr><th>Date</th><th>Vendor</th><th>Invoice #</th><th>Cost</th><th>Qty</th></tr></thead><tbody>
+      ${lines.slice(1,6).map(e=>`<tr><td>${vEsc(e.date?String(e.date).slice(0,10):"")}</td><td>${vEsc(e.distributor||"")}</td><td>${vEsc(e.invoice||"")}</td><td>${fmtUSD(num(e.cost))}${e.shipper?" (shipper)":""}</td><td>${num(e.qty)}</td></tr>`).join("")}
+      </tbody></table>${lines.length>6?`<div class="sd-small">\u2026and ${lines.length-6} older</div>`:""}` : ""}
+    ${changes.length ? `<div class="sd-lbl" style="margin-top:10px;">Recent price changes</div>
+      ${changes.map(c=>`<div class="sd-small">${vDate(c.at)} \u00b7 cost ${fmtUSD(num(c.oldCost))}\u2192${fmtUSD(num(c.newCost))} \u00b7 retail ${fmtUSD(num(c.oldRetail))}\u2192${fmtUSD(num(c.newRetail))} <span style="opacity:.7;">(${vEsc(c.source||"")})</span></div>`).join("")}` : ""}`;
+}
 function cleanupKey(o){ return o.kind+"|"+o.uid+"|"+o.field+"|"+o.from; }
 function cleanupCurrent(p, field){
   if(SWEEP_MONEY[field]) return num(p[field]).toFixed(2);
@@ -9721,9 +9794,11 @@ function renderSweepBody(el){
             else fix = `<input class="cl-to" data-key="${vEsc(o.key)}" value="${vEsc(o.to||"")}" placeholder="${o.kind==="rename"?"Type a clearer name":o.field==="unit"?"Type the size":""}">`;
             act = `<button class="btn small primary" data-cfix="${vEsc(o.key)}">Fix</button> <button class="btn small" data-ckeep="${vEsc(o.key)}">On purpose</button>`;
           }
+          const isOpen = st.open && st.open.has(o.key);
+          const detail = isOpen ? `<tr class="sd-row" data-sdfor="${vEsc(o.key)}"><td colspan="6">${sweepDetailHtml(o)}</td></tr>` : "";
           return `<tr ${o.decision?'style="opacity:.65;"':""}><td class="no-print">${o.decision?"":`<input type="checkbox" class="cl-check" data-key="${vEsc(o.key)}" style="width:auto;" ${st.selected.has(o.key)?"checked":""}>`}</td>
-            <td>${nowTxt}</td><td><span class="sub" style="margin:0;">${where}</span></td>
-            <td><span class="sweep-kind sk-${k.group}">${vEsc(k.label)}</span><br>${vEsc(o.why)}</td><td>${fix}</td><td class="no-print" style="white-space:nowrap;">${act}</td></tr>`;
+            <td${p?` class="sd-toggle" data-sdkey="${vEsc(o.key)}" title="Click for invoice history and cost details"`:""}>${p?`<span class="sd-caret">${isOpen?"\u25bc":"\u25b6"}</span>`:""}${nowTxt}</td><td><span class="sub" style="margin:0;">${where}</span></td>
+            <td><span class="sweep-kind sk-${k.group}">${vEsc(k.label)}</span><br>${vEsc(o.why)}</td><td>${fix}</td><td class="no-print" style="white-space:nowrap;">${act}</td></tr>${detail}`;
         }).join("") || `<tr><td colspan="6" style="text-align:center;padding:26px;color:var(--green);font-weight:600;">🎉 Nothing out of place${st.group!=="ALL"||st.kind!=="ALL"?" here":""}</td></tr>`}</tbody>
       </table></div>${list.length>shown.length?`<div class="sub" style="margin-top:6px;">Showing the first ${shown.length} of ${list.length} — pick a group above to narrow it down.</div>`:""}
     </div>`;
@@ -9753,6 +9828,28 @@ function renderSweepBody(el){
     else { if(!to) return "Type the name first"; const err = renameProductEverywhere(p, to, p.unit); if(err) return err; }
     cleanupDecide(o, "fixed", to); return null;
   }
+  if(!st.open) st.open = new Set();
+  const wireUse = scope=>scope.querySelectorAll('[data-sduse]').forEach(b=>b.onclick = ()=>{
+    const inp = el.querySelector(`.cl-to[data-key="${CSS.escape(b.dataset.sduse)}"]`);
+    if(!inp) return;
+    inp.value = b.dataset.val; inp.focus();
+    inp.style.outline = "2px solid var(--green)"; setTimeout(()=>{ inp.style.outline = ""; }, 1200);
+    toast(`Fix to set to ${fmtUSD(+b.dataset.val)} \u2014 click Fix to save it`);
+  });
+  wireUse(el);
+  el.querySelectorAll('[data-sdkey]').forEach(td=>td.onclick = e=>{
+    if(e.target.closest('input,button,select,a')) return;
+    const key = td.dataset.sdkey, tr = td.parentElement, next = tr.nextElementSibling, caret = td.querySelector('.sd-caret');
+    if(next && next.classList.contains('sd-row') && next.dataset.sdfor===key){
+      next.remove(); st.open.delete(key); if(caret) caret.textContent = "\u25b6"; return;
+    }
+    const o = findItem(key); if(!o) return;
+    const row = document.createElement('tr');
+    row.className = "sd-row"; row.dataset.sdfor = key;
+    row.innerHTML = `<td colspan="6">${sweepDetailHtml(o)}</td>`;
+    tr.after(row); st.open.add(key); if(caret) caret.textContent = "\u25bc";
+    wireUse(row);
+  });
   el.querySelectorAll('[data-sg]').forEach(b=>b.onclick = ()=>{ st.group = b.dataset.sg; st.kind = "ALL"; st.selected = new Set(); rer(); });
   el.querySelectorAll('[data-ck]').forEach(b=>b.onclick = ()=>{ st.kind = b.dataset.ck; st.selected = new Set(); rer(); });
   el.querySelector('#clHandled').onchange = e=>{ st.showHandled = e.target.checked; rer(); };
