@@ -678,6 +678,118 @@ let DATA = loadData();
 
 function persist(){ DATA_VERSION++; saveLocalSoon(); scheduleCloudSave(); toast("Saved"); }
 
+/* ===================== TRASH CAN =====================
+   Anything deleted one at a time (products, vendors, invoices and their lines, sales entries, rebates,
+   reports, margin conditions, a whole year) goes here first and can be put back until midnight on the
+   day it was deleted. After midnight (this device's local time) it is cleared for good. Each item is its
+   own synced section, so everyone sees the same trash. */
+function localDay(d){ const x = new Date(d); return x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0")+"-"+String(x.getDate()).padStart(2,"0"); }
+function trashItems(){ return Object.values(DATA.trash||{}).sort((a,b)=>String(b.deletedAt).localeCompare(String(a.deletedAt))); }
+function trashPut(type, label, data, where){
+  if(!DATA.trash || typeof DATA.trash!=="object" || Array.isArray(DATA.trash)) DATA.trash = {};
+  const uid = "t" + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+  DATA.trash[uid] = {uid, type, label, deletedAt: new Date().toISOString(), data: JSON.parse(JSON.stringify(data)), where: where||{}};
+}
+function purgeTrash(){ // drop anything deleted before today
+  if(!DATA || !DATA.trash) return false;
+  const today = localDay(Date.now());
+  let gone = false;
+  Object.keys(DATA.trash).forEach(k=>{ const t = DATA.trash[k]; if(!t || !t.deletedAt || localDay(t.deletedAt) < today){ delete DATA.trash[k]; gone = true; } });
+  return gone;
+}
+function saveQuiet(){ DATA_VERSION++; saveLocalSoon(); scheduleCloudSave(); }
+const TRASH_TYPES = {
+  product:"Product", vendor:"Vendor", condition:"Margin condition", invoice:"Invoice", invoiceLine:"Invoice line",
+  deliveryLine:"Delivery log line", salesDay:"Daily sales entry", salesInvoice:"Sales & Margins invoice", rebate:"Rebate",
+  year:"Year of sales data", inventoryReport:"Monthly inventory report", distributorReport:"Distributor report",
+  officeReport:"Office report", cigReport:"Reconciliation report"
+};
+const TRASH_REPORT_KEY = {inventoryReport:"inventoryReports", distributorReport:"distributorReports", officeReport:"officeReports", cigReport:"cigReconciliationReports"};
+function restoreTrash(uid){
+  const t = DATA.trash && DATA.trash[uid]; if(!t) return "That item is no longer in the trash";
+  const d = t.data, w = t.where||{};
+  if(t.type==="product"){
+    if(DATA.inventory.some(p=>p.uid && p.uid===d.uid)) return "That product is already back on the list";
+    DATA.inventory.push(d);
+  } else if(t.type==="vendor"){
+    if(!Array.isArray(DATA.vendors)) DATA.vendors = [];
+    if(DATA.vendors.some(v=>v.uid===d.uid)) return "That vendor is already back on the list";
+    DATA.vendors.push(d);
+  } else if(t.type==="condition"){
+    if(!Array.isArray(DATA.marginConditions)) DATA.marginConditions = [];
+    if(DATA.marginConditions.some(c=>c.uid===d.uid)) return "That condition is already back";
+    DATA.marginConditions.push(d);
+  } else if(t.type==="invoice" || t.type==="invoiceLine" || t.type==="deliveryLine"){
+    const lines = Array.isArray(d) ? d : [d];
+    lines.forEach(l=>DATA.invoiceEntries.push(l));
+    [...new Set(lines.map(l=>l.invoice))].forEach(n=>syncInvoiceEntryToSalesMargins(n));
+  } else if(t.type==="salesDay" || t.type==="salesInvoice" || t.type==="rebate"){
+    ensureOverlookYear(w.year);
+    const md = DATA.overlooks[w.year][w.month];
+    if(t.type==="salesDay"){
+      if(md.daily.some(x=>x.day===d.day)) return `${w.month} ${d.day} already has a sales entry`;
+      md.daily.push(d); md.daily.sort((a,b)=>a.day-b.day);
+    } else {
+      const arr = t.type==="salesInvoice" ? md.invoices : md.rebates;
+      arr.splice(Math.min(num(w.index), arr.length), 0, d);
+    }
+  } else if(t.type==="year"){
+    if(DATA.overlooks[w.year]) return `${w.year} already exists — delete it first to restore the old copy`;
+    DATA.overlooks[w.year] = d;
+  } else if(TRASH_REPORT_KEY[t.type]){
+    const k = TRASH_REPORT_KEY[t.type];
+    if(!DATA[k]) DATA[k] = {};
+    if(DATA[k][w.id]) return "A report with the same name already exists";
+    DATA[k][w.id] = d;
+  } else return "Unknown item";
+  delete DATA.trash[uid];
+  return null;
+}
+
+function renderTrash(main){
+  purgeTrash();
+  const items = trashItems();
+  const h = v=>String(v??"").replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+  const when = iso=>new Date(iso).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
+  main.innerHTML = `
+    <div class="topbar"><div><h1>Trash</h1><p>Things deleted today wait here until midnight, then they're cleared for good. Restore anything deleted by mistake.</p></div></div>
+    <div class="card">
+      ${items.length ? `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+        <div class="sub" style="margin:0;">${items.length} item${items.length===1?"":"s"} · clears at midnight tonight</div>
+        <button class="btn danger" id="trEmpty">Empty Trash Now</button>
+      </div>
+      <div style="overflow-x:auto;"><table>
+        <thead><tr><th>Deleted</th><th>Type</th><th>Item</th><th></th></tr></thead>
+        <tbody>${items.map(t=>`<tr>
+          <td style="white-space:nowrap;">${when(t.deletedAt)}</td>
+          <td style="white-space:nowrap;">${h(TRASH_TYPES[t.type]||t.type)}</td>
+          <td>${h(t.label)}</td>
+          <td style="white-space:nowrap;text-align:right;">
+            <button class="btn primary" data-trrestore="${h(t.uid)}">Restore</button>
+            <button class="btn danger" data-trkill="${h(t.uid)}">Delete Forever</button>
+          </td></tr>`).join("")}</tbody>
+      </table></div>` : `<div class="sub" style="margin:0;">The trash is empty. When you delete something, it shows up here until midnight.</div>`}
+    </div>`;
+  main.querySelectorAll('[data-trrestore]').forEach(b=>b.onclick = ()=>{
+    const t = DATA.trash[b.dataset.trrestore]; const label = t ? t.label : "";
+    const err = restoreTrash(b.dataset.trrestore);
+    if(err){ toast(err, true); return; }
+    persist(); toast(`Restored: ${label}`); render();
+  });
+  main.querySelectorAll('[data-trkill]').forEach(b=>b.onclick = ()=>{
+    const t = DATA.trash[b.dataset.trkill]; if(!t) return;
+    if(!confirm(`Delete "${t.label}" forever? This can't be undone.`)) return;
+    delete DATA.trash[b.dataset.trkill]; persist(); render();
+  });
+  const emp = document.getElementById('trEmpty');
+  if(emp) emp.onclick = ()=>{
+    if(!confirm(`Permanently delete all ${items.length} item${items.length===1?"":"s"} in the trash? This can't be undone.`)) return;
+    DATA.trash = {}; persist(); render();
+  };
+}
+setInterval(()=>{ if(purgeTrash()){ saveQuiet(); render(); } }, 60000);
+
 /* ===================== CLOUD SYNC (Firestore) =====================
    HOW IT WORKS (and why it changed):
    The old sync uploaded the ENTIRE data set as one blob on every save, and whoever saved last won. So if
@@ -697,7 +809,7 @@ function persist(){ DATA_VERSION++; saveLocalSoon(); scheduleCloudSave(); toast(
 const SYNC_COL = "stationManagerSyncV2";
 const LEGACY_COL = "stationManagerSync";
 const CHUNK_SIZE = 250000; // chars per Firestore doc -- even at 3 bytes/char this stays under the 1 MiB doc limit
-const SPLIT_KEYS = ["inventoryReports","distributorReports","officeReports","cigReconciliationReports","overlooks"];
+const SPLIT_KEYS = ["inventoryReports","distributorReports","officeReports","cigReconciliationReports","overlooks","trash"];
 const CLIENT_ID = (function(){
   try{
     let id = sessionStorage.getItem("stationManagerTabId");
@@ -1533,6 +1645,7 @@ const ROUTES = [
   {id:"inventory", label:"Inventory", icon:"\ud83d\udce6"},
   {id:"operations", label:"Station Operations", icon:"\ud83d\udccb"},
   {id:"sweep", label:"Site Sweep", icon:"\ud83d\udd0e"},
+  {id:"trash", label:"Trash", icon:"\ud83d\uddd1\ufe0f"},
   {id:"data", label:"Backup & Restore", icon:"\ud83d\udcbe"},
 ];
 let currentRoute = "dashboard";
@@ -1543,7 +1656,7 @@ function renderNav(){
   nav.innerHTML = "";
   ROUTES.forEach(r=>{
     const b = document.createElement('button');
-    const badge = !DATA ? 0 : r.id==="inventory" && Array.isArray(DATA.priceAlerts) ? openPriceAlerts().length : r.id==="sweep" ? cleanupOpenCount() : 0;
+    const badge = !DATA ? 0 : r.id==="inventory" && Array.isArray(DATA.priceAlerts) ? openPriceAlerts().length : r.id==="sweep" ? cleanupOpenCount() : r.id==="trash" && DATA.trash ? Object.keys(DATA.trash).length : 0;
     b.innerHTML = `<span class="icon">${r.icon}</span> ${r.label}${badge?`<span class="navbadge" title="${badge} open price alert${badge===1?"":"s"}">${badge}</span>`:""}`;
     b.className = r.id===currentRoute ? "active" : "";
     b.onclick = ()=>{ currentRoute=r.id; render(); };
@@ -1552,6 +1665,7 @@ function renderNav(){
 }
 
 function render(){
+  if(purgeTrash()) saveQuiet();
   renderNav();
   const main = document.getElementById('main');
   main.innerHTML = "";
@@ -1562,6 +1676,7 @@ function render(){
   else if(currentRoute==="inventory") renderInventory(main);
   else if(currentRoute==="operations") renderStationOperations(main);
   else if(currentRoute==="sweep") renderSiteSweep(main);
+  else if(currentRoute==="trash") renderTrash(main);
   else if(currentRoute==="data") renderDataMgmt(main);
 }
 
@@ -1758,7 +1873,8 @@ function buildYearPicker(yp, y, years){
     const warning = monthsWithData
       ? `${y} has data entered in ${monthsWithData} month${monthsWithData===1?"":"s"} (daily sales, invoices, and/or rebates). `
       : "";
-    if(!confirm(`Delete all data for ${y}? ${warning}This cannot be undone. Type OK to confirm you intend to delete this year.`)) return;
+    if(!confirm(`Delete all data for ${y}? ${warning}It will sit in the Trash until midnight tonight, then be gone for good. Press OK to confirm you intend to delete this year.`)) return;
+    trashPut("year", `All sales data for ${y}`, DATA.overlooks[y], {year:y});
     delete DATA.overlooks[y];
     const remaining = Object.keys(DATA.overlooks).sort();
     salesState.year = remaining[remaining.length-1];
@@ -1937,7 +2053,8 @@ function renderSales(main){
   });
   dailyBody.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{
     const day = parseInt(b.dataset.del);
-    if(!confirm(`Remove the sales entry for ${m} ${day}, ${y}? This can't be undone.`)) return;
+    if(!confirm(`Remove the sales entry for ${m} ${day}, ${y}? It moves to the Trash until midnight.`)) return;
+    { const dd = md.daily.find(x=>x.day===day); if(dd) trashPut("salesDay", `Sales for ${m} ${day}, ${y}`, dd, {year:y, month:m}); }
     md.daily = md.daily.filter(x=>x.day!==day);
     persist(); render();
   });
@@ -1965,7 +2082,8 @@ function renderSales(main){
   invBody.querySelectorAll('[data-idx]').forEach(b=>b.onclick=()=>{
     const idx = parseInt(b.dataset.idx);
     const inv = md.invoices[idx];
-    if(!confirm(`Remove the invoice from ${inv?inv.company:""} ${inv&&inv.invoice?"#"+inv.invoice:""} (${fmtUSD(inv?inv.amount:0)})? This can't be undone.`)) return;
+    if(!confirm(`Remove the invoice from ${inv?inv.company:""} ${inv&&inv.invoice?"#"+inv.invoice:""} (${fmtUSD(inv?inv.amount:0)})? It moves to the Trash until midnight.`)) return;
+    if(inv) trashPut("salesInvoice", `${inv.company||"Invoice"}${inv.invoice?" #"+inv.invoice:""} (${fmtUSD(inv.amount)}) \u2014 ${m} ${y}`, inv, {year:y, month:m, index:idx});
     md.invoices.splice(idx,1); persist(); render();
   });
   invBody.querySelectorAll('[data-goedit]').forEach(b=>b.onclick=()=>{
@@ -1991,7 +2109,8 @@ function renderSales(main){
   rebBody.querySelectorAll('[data-idx]').forEach(b=>b.onclick=()=>{
     const idx = parseInt(b.dataset.idx);
     const reb = md.rebates[idx];
-    if(!confirm(`Remove the rebate from ${reb?reb.source:""} ${reb&&reb.ref?"#"+reb.ref:""} (${fmtUSD(reb?reb.amount:0)})? This can't be undone.`)) return;
+    if(!confirm(`Remove the rebate from ${reb?reb.source:""} ${reb&&reb.ref?"#"+reb.ref:""} (${fmtUSD(reb?reb.amount:0)})? It moves to the Trash until midnight.`)) return;
+    if(reb) trashPut("rebate", `${reb.source||"Rebate"}${reb.ref?" #"+reb.ref:""} (${fmtUSD(reb.amount)}) \u2014 ${m} ${y}`, reb, {year:y, month:m, index:idx});
     md.rebates.splice(idx,1); persist(); render();
   });
   document.getElementById('addRebBtn').onclick = ()=>{
@@ -3612,7 +3731,8 @@ function renderOfficeReportsHome(el){
   el.querySelectorAll('[data-ordel]').forEach(b=>b.onclick=()=>{
     const id = b.dataset.ordel;
     const r = DATA.officeReports[id];
-    if(!confirm(`Delete this office report (${r.fromLabel} → ${r.toLabel})? This can't be undone.`)) return;
+    if(!confirm(`Delete this office report (${r.fromLabel} → ${r.toLabel})? It moves to the Trash until midnight.`)) return;
+    trashPut("officeReport", `Office report ${r.fromLabel} \u2192 ${r.toLabel}`, r, {id});
     delete DATA.officeReports[id];
     persist(); toast("Office report deleted"); render();
   });
@@ -4149,7 +4269,8 @@ function renderCigReconciliationHome(el){
   el.querySelectorAll('[data-crdel]').forEach(b=>b.onclick=()=>{
     const id = b.dataset.crdel;
     const r = DATA.cigReconciliationReports[id];
-    if(!confirm(`Delete this reconciliation report (${r.fromLabel} → ${r.toLabel})? This can't be undone.`)) return;
+    if(!confirm(`Delete this reconciliation report (${r.fromLabel} → ${r.toLabel})? It moves to the Trash until midnight.`)) return;
+    trashPut("cigReport", `Reconciliation report ${r.fromLabel} \u2192 ${r.toLabel}`, r, {id});
     delete DATA.cigReconciliationReports[id];
     persist(); toast("Reconciliation report deleted"); render();
   });
@@ -5070,9 +5191,10 @@ function renderReceivedLog(el){
         if(!p) return;
         const received = productReceived(p);
         const warning = received>0 ? ` It currently shows ${received} received.` : "";
-        if(!confirm(`Permanently delete "${p.name}" (${p.category}) from the product register?${warning} This can't be undone and won't remove past delivery log entries.`)) return;
+        if(!confirm(`Permanently delete "${p.name}" (${p.category}) from the product register?${warning} It moves to the Trash until midnight. Past delivery log entries aren't removed.`)) return;
+        trashPut("product", `${p.name} (${p.category})`, p);
         DATA.inventory = DATA.inventory.filter(x=>x!==p);
-        persist(); toast("Product deleted"); renderReceivedLog(el);
+        persist(); toast("Product moved to Trash"); renderReceivedLog(el);
       };
     });
   }
@@ -5630,8 +5752,9 @@ function renderInvoiceEntry(el){
     body.querySelectorAll('[data-idx]').forEach(b=>b.onclick=()=>{
       const idx = parseInt(b.dataset.idx);
       const line = DATA.invoiceEntries[idx];
-      if(!confirm(`Permanently remove this delivery log line for ${line?line.name:""} (${fmtUSD(line?line.total:0)})? This can't be undone. If you just want it to stop counting toward Received Qty, use "Mark Reconciled" in Invoice Log instead \u2014 it keeps the record.`)) return;
+      if(!confirm(`Remove this delivery log line for ${line?line.name:""} (${fmtUSD(line?line.total:0)})? It moves to the Trash until midnight. If you just want it to stop counting toward Received Qty, use "Mark Reconciled" in Invoice Log instead \u2014 it keeps the record.`)) return;
       const invNum = line ? line.invoice : null;
+      if(line) trashPut("deliveryLine", `${line.name} (${fmtUSD(line.total)}) \u2014 invoice ${line.invoice||"?"}`, line);
       DATA.invoiceEntries.splice(idx,1);
       syncInvoiceEntryToSalesMargins(invNum);
       persist(); draw();
@@ -5781,7 +5904,8 @@ function renderInvoiceLog(el){
       unlistedBox.innerHTML = unlisted.length ? `<div class="note" style="margin:0 0 10px;">\u26a0\ufe0f ${unlisted.length} compan${unlisted.length===1?"y":"ies"} on past invoices ${unlisted.length===1?"isn't":"aren't"} on your vendor list: ${unlisted.map(n=>`<button class="btn small" data-vcheck="${vEsc(n)}" style="margin:2px;">${vEsc(n)}</button>`).join("")} <span class="sub" style="margin:0;">Click one to add it or mark it as a typo.</span></div>` : "";
       vbody.querySelectorAll('[data-vremove]').forEach(b=>b.onclick = ()=>{
         const v = DATA.vendors.find(x=>x.uid===b.dataset.vremove); if(!v) return;
-        if(!confirm(`Remove ${v.name} from the vendor list? Its contact info will be deleted.`)) return;
+        if(!confirm(`Remove ${v.name} from the vendor list? It moves to the Trash until midnight.`)) return;
+        trashPut("vendor", v.name, v);
         DATA.vendors = DATA.vendors.filter(x=>x!==v); persist(); drawV();
       });
       vbody.querySelectorAll('[data-unalias]').forEach(a=>a.onclick = e=>{
@@ -5863,13 +5987,14 @@ function renderInvoiceLog(el){
         if(!hasOtherInvoice) affectedProducts.push(name);
       });
 
-      let msg = `Permanently delete invoice ${invoiceNum} (${g?g.lines:0} ${lineWord}, ${fmtUSD(g?g.total:0)})? This removes it from Invoice Entry's Delivery Log too and can't be undone. If you just want it to stop counting toward Received Qty, use "Mark Reconciled" instead \u2014 it keeps the record.`;
+      let msg = `Delete invoice ${invoiceNum} (${g?g.lines:0} ${lineWord}, ${fmtUSD(g?g.total:0)})? This removes it from Invoice Entry's Delivery Log too and moves to the Trash until midnight. If you just want it to stop counting toward Received Qty, use "Mark Reconciled" instead \u2014 it keeps the record.`;
       if(affectedProducts.length){
         const shown = affectedProducts.slice(0, 15);
         msg += `\n\nThese ${affectedProducts.length} product(s) have no other pending delivery on file \u2014 their Received Qty in Inventory Count will drop to 0:\n\u2022 ` + shown.join("\n\u2022 ");
         if(affectedProducts.length > shown.length) msg += `\n\u2022 ...and ${affectedProducts.length - shown.length} more`;
       }
       if(!confirm(msg)) return;
+      trashPut("invoice", `Invoice ${invoiceNum}${linesForInvoice[0]&&linesForInvoice[0].distributor?" from "+linesForInvoice[0].distributor:""} (${linesForInvoice.length} ${lineWord}, ${fmtUSD(g?g.total:0)})`, linesForInvoice);
       DATA.invoiceEntries = DATA.invoiceEntries.filter(e=>e.invoice!==invoiceNum);
       if(ilExpanded===invoiceNum) ilExpanded = null;
       syncInvoiceEntryToSalesMargins(invoiceNum);
@@ -5960,7 +6085,8 @@ function renderInvoiceLog(el){
     btn.onclick = ()=>{
       const idx = parseInt(btn.dataset.removeLine);
       const line = DATA.invoiceEntries[idx];
-      if(!confirm(`Remove this line item (${line?line.name:""}, ${fmtUSD(line?line.total:0)}) from invoice ${ilExpanded}?`)) return;
+      if(!confirm(`Remove this line item (${line?line.name:""}, ${fmtUSD(line?line.total:0)}) from invoice ${ilExpanded}? It moves to the Trash until midnight.`)) return;
+      if(line) trashPut("invoiceLine", `${line.name} (${fmtUSD(line.total)}) \u2014 invoice ${line.invoice||ilExpanded}`, line);
       DATA.invoiceEntries.splice(idx,1);
       syncInvoiceEntryToSalesMargins(ilExpanded);
       persist(); toast("Line item removed"); renderInvoiceLog(el);
@@ -6470,7 +6596,8 @@ function renderMonthlyReports(el){
   el.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{
     const k = b.dataset.del;
     const r = DATA.inventoryReports[k];
-    if(!confirm(`Delete the ${r.month} ${r.year} report? This can't be undone.`)) return;
+    if(!confirm(`Delete the ${r.month} ${r.year} report? It moves to the Trash until midnight.`)) return;
+    trashPut("inventoryReport", `${r.month} ${r.year} inventory report`, r, {id:k});
     delete DATA.inventoryReports[k];
     delete monthlyReportsState.checked[k];
     persist(); toast(`${r.month} ${r.year} report deleted`); render();
@@ -6886,7 +7013,8 @@ function renderDistributorReportsHome(el){
   el.querySelectorAll('[data-drdel]').forEach(b=>b.onclick=()=>{
     const id = b.dataset.drdel;
     const r = DATA.distributorReports[id];
-    if(!confirm(`Delete this distributor report (${r.fromLabel} → ${r.toLabel})? This can't be undone.`)) return;
+    if(!confirm(`Delete this distributor report (${r.fromLabel} → ${r.toLabel})? It moves to the Trash until midnight.`)) return;
+    trashPut("distributorReport", `Distributor report ${r.fromLabel} \u2192 ${r.toLabel}`, r, {id});
     delete DATA.distributorReports[id];
     delete monthlyReportsState.distChecked[id];
     persist(); toast("Distributor report deleted"); render();
@@ -8488,7 +8616,8 @@ function renderVendorDetail(el, v){
   if(al) al.onclick = e=>{ e.preventDefault(); invSubTab = "priceAlerts"; vendorState.alertsVendor = v.name; vendorState.vendorUid = null; rerender(); };
   const del = document.getElementById('vdDelete');
   if(del) del.onclick = ()=>{
-    if(!confirm(`Remove ${v.name} from the vendor list? Its contact info will be deleted. Past invoices aren't affected.`)) return;
+    if(!confirm(`Remove ${v.name} from the vendor list? It moves to the Trash until midnight. Past invoices aren't affected.`)) return;
+    trashPut("vendor", v.name, v);
     DATA.vendors = DATA.vendors.filter(x=>x!==v);
     vendorState.vendorUid = null; persist(); rerender();
   };
@@ -9060,7 +9189,8 @@ function renderMarginConditions(el){
   });
   el.querySelectorAll('[data-cdel]').forEach(b=>b.onclick = ()=>{
     const c = DATA.marginConditions.find(x=>x.uid===b.dataset.cdel); if(!c) return;
-    if(!confirm(`Delete the condition for ${condScopeText(c)} (${condTargetText(c)})?`)) return;
+    if(!confirm(`Delete the condition for ${condScopeText(c)} (${condTargetText(c)})? It moves to the Trash until midnight.`)) return;
+    trashPut("condition", `${condScopeText(c)} \u2014 ${condTargetText(c)}`, c);
     DATA.marginConditions = DATA.marginConditions.filter(x=>x!==c);
     if(condFormState.editUid===c.uid) condFormState.editUid = null;
     persist(); renderMarginConditions(el);
@@ -9894,7 +10024,8 @@ function renderSweepBody(el){
   el.querySelectorAll('[data-undo]').forEach(b=>b.onclick = ()=>{ delete DATA.cleanupDecisions[b.dataset.undo]; persist(); rer(); });
   el.querySelectorAll('[data-cdelete]').forEach(b=>b.onclick = ()=>{
     const o = findItem(b.dataset.cdelete); if(!o || !o.p) return;
-    if(!confirm(`Delete this unnamed product (${o.p.category}, ${cleanupCurrent(o.p,"unit")||"no size"}, retail ${fmtUSD(num(o.p.retail))}, ${num(o.p.closing)} on hand)? This can't be undone.`)) return;
+    if(!confirm(`Delete this unnamed product (${o.p.category}, ${cleanupCurrent(o.p,"unit")||"no size"}, retail ${fmtUSD(num(o.p.retail))}, ${num(o.p.closing)} on hand)? It moves to the Trash until midnight.`)) return;
+    trashPut("product", `Unnamed ${o.p.category} product (retail ${fmtUSD(num(o.p.retail))})`, o.p);
     DATA.inventory = DATA.inventory.filter(x=>x!==o.p); cleanupDecide(o, "removed"); persist(); toast("Product deleted"); rer();
   });
   el.querySelector('#clFixSel').onclick = ()=>{
