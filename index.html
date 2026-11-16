@@ -7565,10 +7565,14 @@ function openDistReportPrintOptionsModal(ids){
 }
 
 /* ---------- Count Sheet (Print) ---------- */
+let countSheetWhich = "ALL";
 function renderCountSheet(el){
   const cats = {};
   DATA.inventory.forEach(p=>{ (cats[p.category]=cats[p.category]||[]).push(p); });
-  const catNames = Object.keys(cats).sort();
+  const allCats = Object.keys(cats).sort();
+  const dueCats = categoryScheduleRows().filter(r=>r.status==="overdue" || r.status==="due" || r.status==="never").map(r=>r.cat);
+  if(countSheetWhich!=="ALL" && countSheetWhich!=="DUE" && !allCats.includes(countSheetWhich)) countSheetWhich = "ALL";
+  const catNames = countSheetWhich==="ALL" ? allCats : countSheetWhich==="DUE" ? allCats.filter(c=>dueCats.includes(c)) : [countSheetWhich];
   const BLANK_ROWS = 30;
   const blankRowsHtml = Array.from({length:BLANK_ROWS}).map(()=>`<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>`).join("");
   const blankPage = (n)=>`
@@ -7581,6 +7585,14 @@ function renderCountSheet(el){
         </table></div>
       </div>`;
   el.innerHTML = `
+    <div class="card no-print" style="display:flex;flex-wrap:wrap;gap:12px;align-items:end;">
+      <div style="min-width:260px;"><label>Print sheets for</label><select id="csWhich">
+        <option value="ALL" ${countSheetWhich==="ALL"?"selected":""}>All categories</option>
+        <option value="DUE" ${countSheetWhich==="DUE"?"selected":""}>Due this month (${dueCats.length})</option>
+        ${allCats.map(c=>`<option value="${c}" ${countSheetWhich===c?"selected":""}>${c} only</option>`).join("")}
+      </select></div>
+      <div class="sub" style="flex:1;min-width:220px;">${countSheetWhich==="DUE" ? (catNames.length ? `Due, overdue or never counted: ${catNames.join(", ")}.` : `Nothing is due this month.`) : `Categories due this month: ${dueCats.length ? dueCats.join(", ") : "none"}.`} Set how often each category is counted in Inventory Count.</div>
+    </div>
     <div class="note no-print">Blank printable sheet for a physical count \u2014 use Print This View above. Each category prints on its own page(s) so it can be handed off separately. Five blank pages are included at the end for products not yet in the system.</div>
     <div class="count-cat-pages">
     ${catNames.map(c=>`
@@ -7595,6 +7607,7 @@ function renderCountSheet(el){
     </div>
     ${[1,2,3,4,5].map(blankPage).join("")}
   `;
+  document.getElementById('csWhich').onchange = e=>{ countSheetWhich = e.target.value; renderCountSheet(el); };
 }
 
 /* ---------- Print Summary (one page) ---------- */
