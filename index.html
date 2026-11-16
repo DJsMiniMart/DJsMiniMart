@@ -575,6 +575,7 @@ function smartSuggestedRetail(p, newCost){
   return suggestedRetail(p, newCost);
 }
 
+function isObjPlain(v){ return !!v && typeof v==="object" && !Array.isArray(v); }
 function migrate(stored){
   let changed = false;
   Object.keys(SEED).forEach(k=>{
@@ -611,6 +612,8 @@ function migrate(stored){
       seen.add(p.uid);
     });
   }
+  if(!isObjPlain(stored.categoryCounts)){ stored.categoryCounts = {}; changed = true; }
+  if(!isObjPlain(stored.countSchedule)){ stored.countSchedule = {}; changed = true; }
   if(migrateVendors(stored)) changed = true;
   return changed;
 }
@@ -702,9 +705,9 @@ const TRASH_TYPES = {
   product:"Product", vendor:"Vendor", condition:"Margin condition", invoice:"Invoice", invoiceLine:"Invoice line",
   deliveryLine:"Delivery log line", salesDay:"Daily sales entry", salesInvoice:"Sales & Margins invoice", rebate:"Rebate",
   year:"Year of sales data", inventoryReport:"Monthly inventory report", distributorReport:"Distributor report",
-  officeReport:"Office report", cigReport:"Reconciliation report"
+  officeReport:"Office report", cigReport:"Reconciliation report", categoryCount:"Category count"
 };
-const TRASH_REPORT_KEY = {inventoryReport:"inventoryReports", distributorReport:"distributorReports", officeReport:"officeReports", cigReport:"cigReconciliationReports"};
+const TRASH_REPORT_KEY = {inventoryReport:"inventoryReports", distributorReport:"distributorReports", officeReport:"officeReports", cigReport:"cigReconciliationReports", categoryCount:"categoryCounts"};
 function restoreTrash(uid){
   const t = DATA.trash && DATA.trash[uid]; if(!t) return "That item is no longer in the trash";
   const d = t.data, w = t.where||{};
@@ -809,7 +812,7 @@ setInterval(()=>{ if(purgeTrash()){ saveQuiet(); render(); } }, 60000);
 const SYNC_COL = "stationManagerSyncV2";
 const LEGACY_COL = "stationManagerSync";
 const CHUNK_SIZE = 250000; // chars per Firestore doc -- even at 3 bytes/char this stays under the 1 MiB doc limit
-const SPLIT_KEYS = ["inventoryReports","distributorReports","officeReports","cigReconciliationReports","overlooks","trash"];
+const SPLIT_KEYS = ["inventoryReports","distributorReports","officeReports","cigReconciliationReports","overlooks","trash","categoryCounts"];
 const CLIENT_ID = (function(){
   try{
     let id = sessionStorage.getItem("stationManagerTabId");
@@ -3672,6 +3675,7 @@ function renderOfficeReportsHome(el){
   el.innerHTML = `
     ${renderReportTypeTabsHtml()}
     ${renderOfficeModeTabsHtml()}
+    ${Object.keys(DATA.categoryCounts||{}).length ? `<div class="note" style="border-left:4px solid #d9a400;">⚠️ You're counting some categories at a time. In a whole-store snapshot, any category you didn't count that month still carries its last count, so it shows as not selling. This report is only reliable between two full counts — for one category, use Monthly Reports → Category Counts.</div>` : ``}
     <div class="note">Compares the product that left the shelf between two counts against the inside sales you entered each day in Sales &amp; Margins, to show how much product is unaccounted for. Most useful right after you complete a new count — e.g. July → September — and once every day in the window has a daily total entered.</div>
     <div class="card">
       <h2>Generate an Office Report</h2>
@@ -3971,6 +3975,7 @@ function renderCountComparison(el){
   el.innerHTML = `
     ${renderReportTypeTabsHtml()}
     ${renderOfficeModeTabsHtml()}
+    ${Object.keys(DATA.categoryCounts||{}).length ? `<div class="note" style="border-left:4px solid #d9a400;">⚠️ You're counting some categories at a time. In a whole-store snapshot, any category you didn't count that month still carries its last count, so it shows as not selling. This report is only reliable between two full counts — for one category, use Monthly Reports → Category Counts.</div>` : ``}
     <div class="note">Pick an earlier count and compare it to the most recent count, product by product. Received = what was invoiced between the two counts. *Units Sold = Earlier + Received − Latest. A red <b>check</b> tag means there's more on the shelf than the earlier count plus deliveries explains — usually a miscount or a missing invoice.</div>
     <div class="card no-print">
       <div class="form-grid" style="grid-template-columns:1fr 1fr;">
@@ -5801,8 +5806,10 @@ function renderInvoiceLog(el){
     <div class="card">
       <h2>Reconcile a Count Period</h2>
       <div class="note" style="margin-top:0;">After you roll a count (Closing \u2192 Opening), mark the invoices that were part of that count as reconciled so they stop counting toward Received Qty next period. This keeps the invoices on file for reference \u2014 nothing is deleted. Pick your count date below and everything dated on or before it gets marked.</div>
-      <div class="form-grid" style="grid-template-columns:1fr auto;align-items:end;">
-        <div><label>Mark all invoices reconciled dated on or before</label><input id="ilBulkDate" type="date"></div>
+      <div class="note" style="margin-top:0;">Counting one category at a time? Pick that category so only its lines get marked — other categories' lines on the same invoices stay pending until they're counted. (Saving a category count in Inventory Count can do this for you.)</div>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr auto;align-items:end;">
+        <div><label>Category</label><select id="ilBulkCat"><option value="ALL">All categories (full count)</option>${catNames.map(c=>`<option value="${c}">${c}</option>`).join("")}</select></div>
+        <div><label>Mark invoice lines reconciled dated on or before</label><input id="ilBulkDate" type="date"></div>
         <div><button class="btn primary" id="ilBulkReconcileBtn">Mark Reconciled Through This Date</button></div>
       </div>
     </div>
@@ -6007,11 +6014,13 @@ function renderInvoiceLog(el){
   document.getElementById('ilBulkReconcileBtn').onclick = ()=>{
     const cutoff = document.getElementById('ilBulkDate').value;
     if(!cutoff){ toast("Pick a cutoff date first", true); return; }
-    const toMark = DATA.invoiceEntries.filter(e=> !e.reconciled && e.date && e.date.slice(0,10) <= cutoff);
-    if(!toMark.length){ toast("No pending invoices found on or before that date", true); return; }
+    const bulkCat = document.getElementById('ilBulkCat').value;
+    const toMark = pendingCategoryLines(bulkCat, cutoff);
+    if(!toMark.length){ toast(`No pending ${bulkCat==="ALL"?"":bulkCat+" "}invoice lines found on or before that date`, true); return; }
     const invoiceNums = [...new Set(toMark.map(e=>e.invoice))];
     const total = toMark.reduce((s,e)=>s+num(e.total),0);
-    if(!confirm(`Mark ${toMark.length} line item(s) across ${invoiceNums.length} invoice(s) dated on or before ${cutoff} (${fmtUSD(total)} total) as reconciled? They'll stop counting toward Received Qty but stay on file \u2014 you can undo this per invoice later.`)) return;
+    const cycleWarn = bulkCat==="ALL" && Object.keys(DATA.categoryCounts||{}).length ? `\n\n⚠️ This marks EVERY category. If you only counted some categories, cancel and pick the category instead.` : ``;
+    if(!confirm(`Mark ${toMark.length} ${bulkCat==="ALL"?"":bulkCat+" "}line item(s) across ${invoiceNums.length} invoice(s) dated on or before ${cutoff} (${fmtUSD(total)} total) as reconciled? They'll stop counting toward Received Qty but stay on file \u2014 you can undo this per invoice later.${cycleWarn}`)) return;
     toMark.forEach(e=>{ e.reconciled = true; });
     persist();
     toast(`Marked ${toMark.length} line item(s) across ${invoiceNums.length} invoice(s) as reconciled`);
@@ -6318,6 +6327,7 @@ function renderInventoryCount(el){
       <div><label>&nbsp;</label><button class="btn danger" id="icClearClosingBtn" title="Blank out the Closing field for every product shown \u2014 use this before starting a fresh count">\u2716 Clear Closing (all shown)</button></div>
       <div><label>&nbsp;</label><button class="btn" id="icRollAllBtn" title="Copy every Closing Count shown below into Opening \u2014 use this to start a new count period">\u21bb Roll Closing \u2192 Opening (all shown)</button></div>
     </div>
+    <div id="icCatCountBar"></div>
     <div class="card">
       <div class="tablewrap"><table>
         <thead><tr><th>Product</th><th>Unit</th><th>Par</th><th>Opening</th><th></th><th>Received</th><th>Total Avail.</th><th>Closing</th><th>Units Sold</th><th>Notes</th></tr></thead>
@@ -6327,7 +6337,53 @@ function renderInventoryCount(el){
   `;
   let icSearch="", icCat="ALL";
   document.getElementById('icSearch').oninput = e=>{ icSearch=e.target.value.toLowerCase(); draw(); };
-  document.getElementById('icCat').onchange = e=>{ icCat=e.target.value; draw(); };
+  document.getElementById('icCat').onchange = e=>{ icCat=e.target.value; drawCatCountBar(); draw(); };
+  function drawCatCountBar(){
+    const bar = document.getElementById('icCatCountBar');
+    if(!bar) return;
+    const sched = categoryScheduleRows();
+    if(icCat==="ALL"){
+      const dueRows = sched.filter(r=>r.status==="overdue" || r.status==="due" || r.status==="never");
+      const tag = r=> r.status==="overdue" ? `<span class="pill bad">Overdue</span>` : r.status==="due" ? `<span class="pill warn">Due this month</span>` : `<span class="pill warn">Not counted yet</span>`;
+      bar.innerHTML = `<div class="card">
+        <b>Categories to count</b>
+        ${dueRows.length ? `<div class="flex" style="flex-wrap:wrap;gap:8px;margin-top:8px;">${dueRows.map(r=>`<button class="btn small" data-icgo="${r.cat}">${r.cat} ${tag(r)}</button>`).join("")}</div>`
+          : `<div class="sub">Nothing is due this month.</div>`}
+        <div class="sub" style="margin-top:8px;">Pick a category to count it and set how often it's counted. All categories: Monthly Reports → Category Counts.</div>
+      </div>`;
+      bar.querySelectorAll('[data-icgo]').forEach(b=>b.onclick=()=>{ icCat=b.dataset.icgo; document.getElementById('icCat').value=icCat; drawCatCountBar(); draw(); });
+      return;
+    }
+    const last = categoryCountsFor(icCat).slice(-1)[0];
+    const srow = sched.find(r=>r.cat===icCat);
+    const every = countEvery(icCat);
+    bar.innerHTML = `<div class="card" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;">
+      <div style="flex:1;min-width:220px;"><b>Save the ${icCat} count</b><div class="sub">Freezes every ${icCat} Closing count as of the date you pick, for Monthly Reports → Category Counts. ${last ? `Last saved count: ${fmtCountDate(last.date)}.` : `No ${icCat} count saved yet.`}</div></div>
+      <div><label>Count every</label><select id="icCountEvery">${countEveryOptionsHtml(every)}</select><div class="sub">${!every ? "Not scheduled" : srow && srow.due ? `Next due ${fmtCountDate(srow.due)}` : "Due now"}</div></div>
+      <div><label>Count date</label><input type="date" id="icCountDate" value="${localDay(Date.now())}"></div>
+      <div><button class="btn primary" id="icSaveCatCountBtn">✓ Save ${icCat} Count</button></div>
+    </div>`;
+    document.getElementById('icCountEvery').onchange = e=>{ setCountEvery(icCat, e.target.value); drawCatCountBar(); };
+    document.getElementById('icSaveCatCountBtn').onclick = ()=>{
+      const date = document.getElementById('icCountDate').value;
+      if(!date){ toast("Pick the date you counted", true); return; }
+      const existing = categoryCountsFor(icCat).find(c=>c.date===date);
+      if(existing && !confirm(`A ${icCat} count for ${fmtCountDate(date)} is already saved. Replace it with the counts shown now?`)) return;
+      const rec = saveCategoryCount(icCat, date);
+      toast(`${icCat} count saved for ${fmtCountDate(rec.date)} (${rec.products.length} products)`);
+      const isLatest = !categoryCountsFor(icCat).some(c=>c.date > date);
+      if(isLatest){
+        const pend = pendingCategoryLines(icCat, date);
+        const pendTotal = pend.reduce((t,e)=>t+num(e.total),0);
+        if(confirm(`Count saved. Start the next ${icCat} period now?\n\n• Roll ${icCat} Closing → Opening (${rec.products.length} products)\n• Mark ${pend.length} ${icCat} invoice line(s) dated on or before ${fmtCountDate(date)} as reconciled (${fmtUSD(pendTotal)}). Lines for other categories stay pending, even on the same invoice.\n\nPress Cancel to keep just the saved count and do this later.`)){
+          const r = startNextCategoryPeriod(icCat, rec.id, date);
+          toast(`${icCat}: rolled ${r.products} products, reconciled ${r.lines} invoice line(s)`);
+        }
+      }
+      drawCatCountBar(); draw();
+    };
+  }
+  drawCatCountBar();
   document.getElementById('icClearClosingBtn').onclick = ()=>{
     const list = currentList();
     if(!list.length) return;
@@ -6424,6 +6480,272 @@ function renderInventoryCount(el){
   draw();
 }
 
+/* ---------- Category Counts (cycle counting) ----------
+   Counting only some categories each month. Each saved count freezes ONE category's Closing counts on
+   the actual date counted, in DATA.categoryCounts. A category is reconciled between its own two most
+   recent counts -- so Cigarettes can run Oct 31 -> Nov 30 while Grocery runs Aug 31 -> Nov 30:
+     Beginning (earlier count) + Received (invoiced after the earlier count, through the later count)
+     - Ending (later count) = Units that left the shelf.
+   Invoices dated ON a count date belong to the window ending on that date (assumes you count after the
+   day's deliveries are on the shelf). Values use invoice cost, the same basis as the other office reports.
+   DATA.countSchedule holds how often each category should be counted, in months. */
+const DEFAULT_COUNT_EVERY = {CIGARETTES:1, TOBACCO:1};
+const DEFAULT_COUNT_EVERY_OTHER = 3;
+const COUNT_EVERY_OPTIONS = [[1,"Month"],[2,"2 months"],[3,"3 months"],[6,"6 months"],[12,"Year"],[0,"Not scheduled"]];
+function countEveryOptionsHtml(sel){ return COUNT_EVERY_OPTIONS.map(([v,l])=>`<option value="${v}" ${sel===v?"selected":""}>${l}</option>`).join(""); }
+function setCountEvery(cat, months){ if(!isObjPlain(DATA.countSchedule)) DATA.countSchedule = {}; DATA.countSchedule[cat] = parseInt(months)||0; persist(); }
+let categoryCountsState = {category:"", fromId:"", toId:"", onlyMoved:false};
+function fmtCountDate(d){ return d ? new Date(d+"T00:00:00").toLocaleDateString() : ""; }
+function addMonthsStr(d, months){
+  const x = new Date(d+"T00:00:00"); const day = x.getDate();
+  x.setDate(1); x.setMonth(x.getMonth()+months);
+  const last = new Date(x.getFullYear(), x.getMonth()+1, 0).getDate();
+  x.setDate(Math.min(day, last));
+  return localDay(x);
+}
+function countEvery(cat){
+  const v = DATA.countSchedule && DATA.countSchedule[cat];
+  if(v!==undefined && v!==null) return num(v); // 0 = not scheduled
+  return DEFAULT_COUNT_EVERY[cat] || DEFAULT_COUNT_EVERY_OTHER;
+}
+function categoryCountsFor(cat){
+  return Object.values(DATA.categoryCounts||{}).filter(c=>c.category===cat)
+    .sort((a,b)=>a.date.localeCompare(b.date) || String(a.savedAt).localeCompare(String(b.savedAt)));
+}
+function saveCategoryCount(cat, date){
+  if(!isObjPlain(DATA.categoryCounts)) DATA.categoryCounts = {};
+  Object.values(DATA.categoryCounts).forEach(c=>{ if(c.category===cat && c.date===date) delete DATA.categoryCounts[c.id]; });
+  const id = "cc_" + date + "_" + vendorKey(cat) + "_" + Date.now().toString(36);
+  DATA.categoryCounts[id] = {
+    id, category:cat, date, savedAt:new Date().toISOString(),
+    products: DATA.inventory.filter(p=>p.category===cat).map(p=>({uid:p.uid||"", name:p.name, unit:p.unit||"",
+      closing:num(p.closing), cost:num(p.cost), retail:num(p.retail), buydown:num(p.buydown)}))
+  };
+  persist();
+  return DATA.categoryCounts[id];
+}
+/* Which category an invoice line belongs to: the Product List's category for that exact product (name +
+   size) when it's on the list, otherwise the category typed on the invoice. */
+function invoiceLineCategoryResolver(){
+  const keyCat = new Map();
+  DATA.inventory.forEach(p=>keyCat.set(normName(p.name)+"||"+normUnit(p.unit), p.category));
+  return e=> keyCat.get(normName(e.name)+"||"+normUnit(e.unit)) || String(categoryForInvoiceEntry(e)||"").toUpperCase();
+}
+function pendingCategoryLines(cat, throughDate){
+  const catOf = invoiceLineCategoryResolver();
+  return DATA.invoiceEntries.filter(e=>!e.reconciled && e.date && (!throughDate || e.date.slice(0,10) <= throughDate) && (cat==="ALL" || catOf(e)===cat));
+}
+/* Starts a category's next count period: Opening = Closing for its products, and only that category's
+   invoice lines (through the count date) are marked reconciled -- other categories' lines, even on the
+   same invoice, stay pending until their own count. Lines remember which count reconciled them so
+   deleting that count can put them back. */
+function startNextCategoryPeriod(cat, countId, throughDate){
+  const lines = pendingCategoryLines(cat, throughDate);
+  lines.forEach(e=>{ e.reconciled = true; e.reconciledByCount = countId; });
+  const prods = DATA.inventory.filter(p=>p.category===cat);
+  prods.forEach(p=>{
+    p.opening = num(p.closing);
+    p.received_qty = 0; // new period: nothing received yet (Received otherwise falls back to this old figure)
+    p.sold = productUnitsSold(p);
+  });
+  const rec = DATA.categoryCounts[countId];
+  if(rec){ rec.rolled = true; rec.reconciledLines = lines.length; }
+  persist();
+  return {lines: lines.length, total: lines.reduce((t,e)=>t+num(e.total),0), invoices: new Set(lines.map(e=>e.invoice)).size, products: prods.length};
+}
+function categoryReconcile(cat, fromRec, toRec){
+  const keyOf = p=>normName(p.name)+"||"+normUnit(p.unit);
+  const fromMap = new Map(fromRec.products.map(p=>[keyOf(p), p]));
+  const toMap = new Map(toRec.products.map(p=>[keyOf(p), p]));
+  const received = new Map(), lines = [];
+  let purchases = 0, unmatched = 0, unmatchedLines = [];
+  DATA.invoiceEntries.forEach(e=>{
+    const d = (e.date||"").slice(0,10);
+    if(!d || d <= fromRec.date || d > toRec.date) return;
+    const k = keyOf(e);
+    const inCat = fromMap.has(k) || toMap.has(k) || String(categoryForInvoiceEntry(e)).toUpperCase()===cat;
+    if(!inCat) return;
+    if(fromMap.has(k) || toMap.has(k)){
+      received.set(k, (received.get(k)||0) + num(e.qty));
+      purchases += num(e.total);
+    } else {
+      unmatched += num(e.total);
+      unmatchedLines.push(e);
+    }
+  });
+  const rows = [];
+  const keys = new Set([...toMap.keys(), ...fromMap.keys()]);
+  keys.forEach(k=>{
+    const fp = fromMap.get(k), tp = toMap.get(k), base = tp || fp;
+    const begin = fp ? num(fp.closing) : 0, end = tp ? num(tp.closing) : 0, rec = received.get(k)||0;
+    const left = begin + rec - end;
+    const cost = num(base.cost), retail = num(base.retail);
+    const netCost = isBuydownCategory(cat) ? cost - num(base.buydown) : cost;
+    rows.push({name:base.name, unit:base.unit, begin, received:rec, end, left, leftNet:left*netCost,
+      beginValue: begin*(fp?num(fp.cost):cost), endValue: end*cost, leftCost:left*cost, leftRetail:left*retail,
+      flag: !fp ? "new" : (!tp ? "gone" : (left<0 ? "check" : ""))});
+  });
+  rows.sort((a,b)=>a.name.localeCompare(b.name));
+  const t = rows.reduce((t,r)=>{ ["begin","received","end","left","beginValue","endValue","leftCost","leftNet","leftRetail"].forEach(f=>t[f]+=r[f]); return t; },
+    {begin:0, received:0, end:0, left:0, beginValue:0, endValue:0, leftCost:0, leftNet:0, leftRetail:0});
+  t.purchases = purchases;
+  t.leftBook = t.beginValue + purchases - t.endValue; // dollars by the books (invoice totals)
+  t.margin = t.leftRetail>0 ? 1 - t.leftNet/t.leftRetail : null; // after buydowns for Cigarettes/Tobacco
+  t.unmatched = unmatched;
+  t.days = Math.max(0, Math.round((new Date(toRec.date+"T00:00:00") - new Date(fromRec.date+"T00:00:00"))/86400000));
+  t.checks = rows.filter(r=>r.flag==="check").length;
+  return {rows, totals:t, unmatchedLines, from:fromRec, to:toRec};
+}
+function categoryScheduleRows(){
+  const cats = [...new Set(DATA.inventory.map(p=>p.category).filter(Boolean))].sort();
+  const today = localDay(Date.now());
+  return cats.map(cat=>{
+    const counts = categoryCountsFor(cat);
+    const last = counts[counts.length-1], prev = counts[counts.length-2];
+    const every = countEvery(cat);
+    const due = last && every ? addMonthsStr(last.date, every) : "";
+    let status = "ok";
+    if(!every) status = "off";
+    else if(!last) status = "never";
+    else if(due < today) status = "overdue";
+    else if(due.slice(0,7)===today.slice(0,7)) status = "due";
+    return {cat, counts, last, prev, every, due, status};
+  });
+}
+function renderCategoryCounts(el){
+  const st = categoryCountsState;
+  const sched = categoryScheduleRows();
+  const pill = s=> s==="overdue" ? '<span class="pill bad">Overdue</span>' : s==="due" ? '<span class="pill warn">Due this month</span>'
+    : s==="never" ? '<span class="pill warn">Not counted yet</span>' : s==="off" ? '<span style="color:var(--text-dim);">Not scheduled</span>' : '<span class="pill ok">OK</span>';
+  if(!st.category || !sched.some(r=>r.cat===st.category)){
+    const withTwo = sched.find(r=>r.counts.length>=2) || sched.find(r=>r.counts.length) || sched[0];
+    st.category = withTwo ? withTwo.cat : "";
+    st.fromId = st.toId = "";
+  }
+  const counts = categoryCountsFor(st.category);
+  if(!counts.find(c=>c.id===st.toId)) st.toId = counts.length ? counts[counts.length-1].id : "";
+  const toRec = DATA.categoryCounts[st.toId];
+  if(!counts.find(c=>c.id===st.fromId) || (toRec && DATA.categoryCounts[st.fromId].date >= toRec.date)){
+    const earlier = toRec ? counts.filter(c=>c.date < toRec.date) : [];
+    st.fromId = earlier.length ? earlier[earlier.length-1].id : "";
+  }
+  const fromRec = DATA.categoryCounts[st.fromId];
+  const a = fromRec && toRec ? categoryReconcile(st.category, fromRec, toRec) : null;
+  const opt = (c, sel)=>`<option value="${c.id}" ${c.id===sel?"selected":""}>${fmtCountDate(c.date)}</option>`;
+  const shown = a ? (st.onlyMoved ? a.rows.filter(r=>r.left!==0 || r.flag || r.received) : a.rows) : [];
+  el.innerHTML = `
+    ${renderReportTypeTabsHtml()}
+    <div class="note">For counting a few categories at a time. Save a category's count from Inventory Count (pick the category, enter Closing counts, press <b>Save … Count</b>). Each category is reconciled between its own last two counts: Beginning + Received (invoiced after the earlier count, through the later one) − Ending = what left the shelf. Your daily sales totals are store-wide, so they can't be checked against one category — use the Shrink Check after a full count for that.</div>
+    <div class="card">
+      <h2>Count Schedule</h2>
+      <div class="tablewrap" style="max-height:none;"><table>
+        <thead><tr><th>Category</th><th>Count every</th><th>Last counted</th><th>Next due</th><th>Status</th><th>Counts saved</th><th></th></tr></thead>
+        <tbody>${sched.map(r=>`<tr>
+          <td>${r.cat}</td>
+          <td><select data-every="${r.cat}" class="no-print">${countEveryOptionsHtml(r.every)}</select></td>
+          <td>${r.last ? fmtCountDate(r.last.date) : "—"}</td>
+          <td>${r.due ? fmtCountDate(r.due) : (r.every && !r.last ? "Now" : "—")}</td>
+          <td>${pill(r.status)}</td>
+          <td>${r.counts.length}</td>
+          <td class="rowbtns"><button class="btn small" data-ccview="${r.cat}" ${r.counts.length?"":"disabled"}>Reconcile</button></td>
+        </tr>`).join("")}</tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <div class="flex" style="justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center;">
+        <h2 style="margin:0;">Reconcile a Category</h2>
+        ${a ? `<div class="btnrow no-print"><button class="btn small" id="ccCsvBtn">⬇ Download CSV</button><button class="btn small primary" id="ccPrintBtn">🖶 Print</button></div>` : ``}
+      </div>
+      <div class="form-grid no-print" style="grid-template-columns:1fr 1fr 1fr;margin-top:8px;">
+        <div><label>Category</label><select id="ccCat">${sched.map(r=>`<option value="${r.cat}" ${r.cat===st.category?"selected":""}>${r.cat} (${r.counts.length})</option>`).join("")}</select></div>
+        <div><label>From (earlier count)</label><select id="ccFrom"><option value="">—</option>${counts.filter(c=>!toRec || c.date<toRec.date).slice().reverse().map(c=>opt(c, st.fromId)).join("")}</select></div>
+        <div><label>To (later count)</label><select id="ccTo">${counts.slice().reverse().map(c=>opt(c, st.toId)).join("")}</select></div>
+      </div>
+      ${!counts.length ? `<div class="note">No ${st.category||""} counts saved yet.</div>`
+        : !a ? `<div class="note">Only one ${st.category} count is saved (${fmtCountDate(counts[0].date)}). The reconciliation starts with the next one.</div>` : ``}
+    </div>
+    ${a ? `
+    <div class="kpis">
+      <div class="kpi"><div class="lbl">Window</div><div class="val" style="font-size:15px;">${fmtCountDate(a.from.date)} → ${fmtCountDate(a.to.date)}</div><div class="sub">${a.totals.days} days</div></div>
+      <div class="kpi"><div class="lbl">Beginning</div><div class="val">${fmtUSD0(a.totals.beginValue)}</div><div class="sub">${a.totals.begin.toLocaleString()} units</div></div>
+      <div class="kpi"><div class="lbl">Purchases</div><div class="val">${fmtUSD0(a.totals.purchases)}</div><div class="sub">${a.totals.received.toLocaleString()} units invoiced</div></div>
+      <div class="kpi"><div class="lbl">Ending</div><div class="val">${fmtUSD0(a.totals.endValue)}</div><div class="sub">${a.totals.end.toLocaleString()} units</div></div>
+      <div class="kpi"><div class="lbl">Left the Shelf</div><div class="val">${fmtUSD0(a.totals.leftCost)}</div><div class="sub">${a.totals.left.toLocaleString()} units · ${fmtUSD0(a.totals.leftRetail)} at retail</div></div>
+      <div class="kpi"><div class="lbl">Margin</div><div class="val">${a.totals.margin===null?"—":(a.totals.margin*100).toFixed(1)+"%"}</div>${isBuydownCategory(st.category)?`<div class="sub">after buydowns</div>`:``}</div>
+    </div>
+    ${a.totals.checks ? `<div class="note" style="border-left:4px solid #d9a400;">⚠️ ${a.totals.checks} product(s) have more on the shelf than the earlier count plus deliveries explains (marked <b>check</b>) — usually a miscount or an invoice that wasn't entered.</div>` : ``}
+    ${a.unmatchedLines.length ? `<div class="note" style="border-left:4px solid #d9a400;">⚠️ ${a.unmatchedLines.length} ${st.category} invoice line(s) totalling ${fmtUSD(a.totals.unmatched)} don't match a product in either count by name and size, so they aren't in Received: ${a.unmatchedLines.slice(0,8).map(e=>`${e.name}${e.unit?` (${e.unit})`:""}`).join(", ")}${a.unmatchedLines.length>8?", …":""}. Fix the product name/size on the invoice or the Product List.</div>` : ``}
+    ${Math.abs(a.totals.leftBook - a.totals.leftCost) > Math.max(25, 0.02*Math.abs(a.totals.leftCost)) ? `<div class="note">By invoice dollars, ${fmtUSD(a.totals.leftBook)} left the shelf vs ${fmtUSD(a.totals.leftCost)} at current cost. A gap here usually means costs changed during the window.</div>` : ``}
+    <div class="card">
+      <div class="flex" style="justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center;">
+        <h2 style="margin:0;">${st.category} — ${shown.length.toLocaleString()} products</h2>
+        <label class="no-print" style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="ccOnlyMoved" style="width:auto;" ${st.onlyMoved?"checked":""}> Only products that moved</label>
+      </div>
+      <div class="tablewrap" style="max-height:none;"><table>
+        <thead><tr><th>Product</th><th>Unit</th><th>Beginning</th><th>Received</th><th>Ending</th><th>Left the Shelf</th><th>Cost of What Left</th><th>Retail of What Left</th><th></th></tr></thead>
+        <tbody>${shown.map(r=>`<tr>
+          <td>${r.name}</td><td>${r.unit||""}</td><td>${r.begin}</td><td>${r.received}</td><td>${r.end}</td>
+          <td style="color:${r.left<0?'var(--red)':'inherit'}">${r.left}</td><td>${fmtUSD(r.leftCost)}</td><td>${fmtUSD(r.leftRetail)}</td>
+          <td>${r.flag==="check"?'<span class="pill bad">check</span>':r.flag==="new"?'<span class="pill warn">new</span>':r.flag==="gone"?'<span class="pill warn">not in later count</span>':""}</td>
+        </tr>`).join("")}
+        <tr class="total"><td colspan="2">TOTAL</td><td>${a.totals.begin}</td><td>${a.totals.received}</td><td>${a.totals.end}</td><td>${a.totals.left}</td><td>${fmtUSD(a.totals.leftCost)}</td><td>${fmtUSD(a.totals.leftRetail)}</td><td></td></tr>
+        </tbody>
+      </table></div>
+    </div>` : ``}
+    <div class="card no-print">
+      <h2>Saved ${st.category||""} Counts (${counts.length})</h2>
+      ${counts.length ? `<div class="tablewrap"><table><thead><tr><th>Count date</th><th>Saved</th><th>Products</th><th>Units</th><th>Value</th><th>Next period started</th><th></th></tr></thead><tbody>
+        ${counts.slice().reverse().map(c=>`<tr><td>${fmtCountDate(c.date)}</td><td>${new Date(c.savedAt).toLocaleString()}</td><td>${c.products.length}</td>
+          <td>${c.products.reduce((s,p)=>s+num(p.closing),0).toLocaleString()}</td><td>${fmtUSD(c.products.reduce((s,p)=>s+num(p.closing)*num(p.cost),0))}</td>
+          <td>${c.rolled ? `✓ ${c.reconciledLines||0} invoice line(s) reconciled` : (c.id===counts[counts.length-1].id ? `<button class="btn small" data-ccroll="${c.id}">Roll &amp; Reconcile</button>` : "—")}</td>
+          <td class="rowbtns"><button class="btn small danger" data-ccdel="${c.id}">Delete</button></td></tr>`).join("")}
+      </tbody></table></div>` : `<div class="sub">None yet.</div>`}
+    </div>
+  `;
+  wireReportTypeTabs();
+  el.querySelectorAll('[data-every]').forEach(sel=>sel.onchange=()=>{
+    setCountEvery(sel.dataset.every, sel.value); renderCategoryCounts(el);
+  });
+  el.querySelectorAll('[data-ccview]').forEach(b=>b.onclick=()=>{ st.category = b.dataset.ccview; st.fromId = st.toId = ""; renderCategoryCounts(el); });
+  document.getElementById('ccCat').onchange = e=>{ st.category = e.target.value; st.fromId = st.toId = ""; renderCategoryCounts(el); };
+  document.getElementById('ccFrom').onchange = e=>{ st.fromId = e.target.value; renderCategoryCounts(el); };
+  document.getElementById('ccTo').onchange = e=>{ st.toId = e.target.value; st.fromId = ""; renderCategoryCounts(el); };
+  const om = document.getElementById('ccOnlyMoved'); if(om) om.onchange = e=>{ st.onlyMoved = e.target.checked; renderCategoryCounts(el); };
+  el.querySelectorAll('[data-ccdel]').forEach(b=>b.onclick=()=>{
+    const c = DATA.categoryCounts[b.dataset.ccdel];
+    if(!c || !confirm(`Delete the ${c.category} count from ${fmtCountDate(c.date)}? It moves to the Trash until midnight.`)) return;
+    const marked = DATA.invoiceEntries.filter(e=>e.reconciledByCount===c.id);
+    if(marked.length && confirm(`${marked.length} invoice line(s) were marked reconciled when this count was saved. Put them back to Pending too?\n\n(Opening counts that were rolled aren't changed — fix those in Inventory Count if needed.)`)){
+      marked.forEach(e=>{ e.reconciled = false; delete e.reconciledByCount; });
+    }
+    trashPut("categoryCount", `${c.category} count ${fmtCountDate(c.date)}`, c, {id:c.id});
+    delete DATA.categoryCounts[c.id];
+    persist(); toast("Count deleted"); renderCategoryCounts(el);
+  });
+  el.querySelectorAll('[data-ccroll]').forEach(b=>b.onclick=()=>{
+    const c = DATA.categoryCounts[b.dataset.ccroll]; if(!c) return;
+    const pend = pendingCategoryLines(c.category, c.date);
+    if(!confirm(`Start the next ${c.category} period?\n\n• Roll ${c.category} Closing → Opening (uses the counts in Inventory Count right now — make sure they're still the ${fmtCountDate(c.date)} counts)\n• Mark ${pend.length} ${c.category} invoice line(s) dated on or before ${fmtCountDate(c.date)} as reconciled. Other categories stay pending.`)) return;
+    const r = startNextCategoryPeriod(c.category, c.id, c.date);
+    toast(`${c.category}: rolled ${r.products} products, reconciled ${r.lines} invoice line(s)`);
+    renderCategoryCounts(el);
+  });
+  if(a){
+    document.getElementById('ccCsvBtn').onclick = ()=>{
+      const out = [[`${st.category} reconciliation - ${fmtCountDate(a.from.date)} to ${fmtCountDate(a.to.date)}`],[]];
+      out.push(["Beginning value", a.totals.beginValue.toFixed(2)],["Purchases (invoiced)", a.totals.purchases.toFixed(2)],["Ending value", a.totals.endValue.toFixed(2)],
+        ["Left the shelf (cost)", a.totals.leftCost.toFixed(2)],["Left the shelf (retail)", a.totals.leftRetail.toFixed(2)],["Margin", a.totals.margin===null?"":(a.totals.margin*100).toFixed(1)+"%"],[]);
+      out.push(["Product","Unit","Beginning","Received","Ending","Left the Shelf","Cost of What Left","Retail of What Left","Note"]);
+      a.rows.forEach(r=>out.push([r.name, r.unit, r.begin, r.received, r.end, r.left, r.leftCost.toFixed(2), r.leftRetail.toFixed(2),
+        r.flag==="check"?"check count / missing invoice":r.flag==="new"?"new since earlier count":r.flag==="gone"?"not in later count":""]));
+      if(a.unmatchedLines.length){ out.push([]); out.push(["Invoice lines not matched to a product"]); a.unmatchedLines.forEach(e=>out.push([e.name, e.unit||"", e.date.slice(0,10), e.qty, num(e.total).toFixed(2)])); }
+      downloadTextFile(`DJs_Mini_Mart_${st.category}_${a.from.date}_to_${a.to.date}.csv`.replace(/[^\w.\-]+/g,"_"), out.map(r=>r.map(csvEscape).join(",")).join("\n"), "text/csv");
+      toast("Reconciliation downloaded");
+    };
+    document.getElementById('ccPrintBtn').onclick = ()=>window.print();
+  }
+}
+
 /* ---------- Monthly Inventory Reports (month-end snapshot, editable) ---------- */
 let monthlyReportsState = { selectedKey: null, checked: {}, reportType: "inventory", selectedDistReportId: null, distChecked: {}, selectedOfficeReportId: null, selectedCigReconciliationId: null };
 function isLastDayOfMonth(d){
@@ -6440,6 +6762,7 @@ function renderReportTypeTabsHtml(){
     <button class="${monthlyReportsState.reportType==='distributor'?'active':''}" id="mrTypeDistributor">Distributor Report</button>
     <button class="${monthlyReportsState.reportType==='office'?'active':''}" id="mrTypeOffice">Office Report</button>
     <button class="${monthlyReportsState.reportType==='cigRecon'?'active':''}" id="mrTypeCigRecon">Cig/Tobacco Reconciliation</button>
+    <button class="${monthlyReportsState.reportType==='catCounts'?'active':''}" id="mrTypeCatCounts">Category Counts</button>
   </div>`;
 }
 function wireReportTypeTabs(){
@@ -6451,8 +6774,11 @@ function wireReportTypeTabs(){
   if(b) b.onclick = ()=>{ monthlyReportsState.reportType='distributor'; render(); };
   if(c) c.onclick = ()=>{ monthlyReportsState.reportType='office'; render(); };
   if(d) d.onclick = ()=>{ monthlyReportsState.reportType='cigRecon'; render(); };
+  const e2 = document.getElementById('mrTypeCatCounts');
+  if(e2) e2.onclick = ()=>{ monthlyReportsState.reportType='catCounts'; render(); };
 }
 function renderMonthlyReports(el){
+  if(monthlyReportsState.reportType==="catCounts"){ renderCategoryCounts(el); return; }
   if(monthlyReportsState.reportType==="distributor"){
     if(monthlyReportsState.selectedDistReportId && DATA.distributorReports[monthlyReportsState.selectedDistReportId]){
       renderDistributorReportDetail(el, monthlyReportsState.selectedDistReportId);
